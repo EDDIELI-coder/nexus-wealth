@@ -59,26 +59,29 @@ def get_google_client():
     
     try:
         creds_dict = {}
-        # 優先嘗試讀取新的 JSON 字串格式
+        # 這裡會讀取 Streamlit Secrets
+        # 我們支援兩種格式：舊的 gcp_service_account 和新的 gcp_json
+        
         if "gcp_json" in st.secrets and "text_content" in st.secrets["gcp_json"]:
+            # 如果你有用核彈級 JSON 方法
             json_str = st.secrets["gcp_json"]["text_content"]
             creds_dict = json.loads(json_str)
-        # 相容舊的 TOML 格式
         elif "gcp_service_account" in st.secrets:
+            # 如果你是用標準貼法
             creds_dict = dict(st.secrets["gcp_service_account"])
-            # 自動修復私鑰格式
+            # 自動修復私鑰格式 (補回換行)
             if "private_key" in creds_dict:
                 creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
         else:
             st.error("❌ 找不到 Secrets 設定，請檢查 Streamlit 後台。")
             st.stop()
 
-        # 使用新版驗證方式
+        # 使用新版驗證方式 (這行是關鍵！)
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
         
     except Exception as e:
-        st.error(f"🔥 連線發生錯誤: {e}")
+        st.error(f"🔥 連線發生錯誤 (請檢查 Secrets): {e}")
         st.stop()
 
 def check_login(username, password):
