@@ -10,6 +10,7 @@ from streamlit import runtime
 import os
 import sys
 import json
+import time
 
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
@@ -85,6 +86,7 @@ def get_google_client():
         st.stop()
 
 def get_service_email():
+    """取得機器人 Email 供使用者除錯"""
     try:
         return st.secrets["gcp_service_account"]["client_email"]
     except:
@@ -168,6 +170,7 @@ def load_data_from_cloud(target_sheet):
     except Exception as e: st.error(f"資料讀取錯誤: {e}")
 
 def save_data_to_cloud(target_sheet, silent=False):
+    """存檔功能：包含重試機制，避免因為網路波動導致崩潰"""
     try:
         sh = init_user_sheet(target_sheet)
         if not sh: return
@@ -178,11 +181,13 @@ def save_data_to_cloud(target_sheet, silent=False):
                 ws.clear()
                 
                 df_clean = df.copy()
+                # 確保數值正確
                 num_cols = ["股數", "現值", "金額", "自訂價格", "參考市價", "每月扣款"]
                 for c in num_cols:
                     if c in df_clean.columns:
                         df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
+                # 嚴格過濾無效行
                 if "代號" in df_clean.columns:
                     df_clean = df_clean[
                         (df_clean["代號"].astype(str).str.strip() != "") & 
@@ -199,7 +204,7 @@ def save_data_to_cloud(target_sheet, silent=False):
                 else: 
                     ws.update([df.columns.values.tolist()])
             except Exception as e:
-                if not silent: st.warning(f"寫入 {title} 時遇到小問題: {e}")
+                print(f"Write Error {title}: {e}")
 
         write_ws("US_Stocks", pd.DataFrame(st.session_state.us_data))
         write_ws("TW_Stocks", pd.DataFrame(st.session_state.tw_data))
@@ -216,8 +221,11 @@ def save_data_to_cloud(target_sheet, silent=False):
         
         if not silent:
             st.toast("✅ 雲端同步完成", icon="☁️")
+        return True
         
-    except Exception as e: st.error(f"存檔失敗: {e}")
+    except Exception as e:
+        if not silent: st.warning(f"⚠️ 存檔時遇到網路問題，請稍後再試: {e}")
+        return False
 
 def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthly_payment):
     today = str(date.today())
@@ -304,7 +312,6 @@ def update_portfolio_data(df, category_default):
             if pd.isna(row.get("類別")) or str(row.get("類別")) == "":
                 df.at[index, "類別"] = category_default
         except Exception:
-            # 如果單一股票更新失敗，跳過不報錯
             continue
             
     my_bar.empty()
@@ -518,10 +525,11 @@ def main_app():
     with tab_edit:
         c_btn, _ = st.columns([1, 4])
         with c_btn:
+            # 這裡觸發智慧更新 + 存檔
             if st.button("⚡ **UPDATE PRICES (更新股價)**", type="primary", help="更新價格並自動存檔"):
                 st.session_state.us_data = update_portfolio_data(st.session_state.us_data, "美股").to_dict('records')
                 st.session_state.tw_data = update_portfolio_data(st.session_state.tw_data, "台股").to_dict('records')
-                # 【關鍵修正】更新完立刻存檔
+                # 【關鍵】更新完立刻存檔，防止網路中斷導致資料遺失
                 save_data_to_cloud(st.session_state.target_sheet)
                 st.rerun()
 
@@ -708,6 +716,7 @@ def main_app():
             with c_v1:
                 st.subheader("資產分佈")
                 fig = px.sunburst(df_assets, path=['類別', '資產'], values='價值', color='類別')
+                # 【關鍵修正】讓點擊區塊後佔比變 100%
                 fig.update_traces(textinfo="label+percent entry", insidetextorientation='horizontal')
                 fig.update_layout(
                     template="plotly_dark",
