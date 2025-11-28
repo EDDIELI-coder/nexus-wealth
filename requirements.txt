@@ -1,7 +1,1 @@
-streamlit
-pandas
-yfinance
-plotly
-gspread
-google-auth
-requests
+streamlitpandasyfinanceplotlygspreadgoogle-authrequests
