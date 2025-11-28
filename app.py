@@ -55,21 +55,19 @@ def get_google_client():
     ]
     
     try:
-        # 這裡會去讀取 secrets.toml 裡的 [gcp_service_account] 區塊
         if "gcp_service_account" not in st.secrets:
-            st.error("❌ 找不到 Secrets 設定！請確認已在 Streamlit 後台貼上 [gcp_service_account] 區塊。")
+            st.error("❌ 找不到 Secrets 設定，請檢查 Streamlit 後台。")
             st.stop()
 
         creds_dict = dict(st.secrets["gcp_service_account"])
         
-        # 自動修復私鑰格式：把 \\n 字串轉回真正的換行符號
+        # 自動修復私鑰格式
         if "private_key" in creds_dict:
             key = creds_dict["private_key"]
             if "\\n" in key:
                 key = key.replace("\\n", "\n")
             creds_dict["private_key"] = key
 
-        # 建立連線
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
         
@@ -206,9 +204,14 @@ def get_precise_price(ticker):
         return float(price)
     except: return 0.0
 
+# --- 【關鍵修正】更新股價函式 ---
 def update_portfolio_data(df, category_default):
-    if df.empty: return df
+    # 1. 無論傳入的是 List 還是 DataFrame，先強制轉成 DataFrame
     df = pd.DataFrame(df)
+    
+    # 2. 現在 df 一定是 DataFrame，可以安全使用 .empty
+    if df.empty: return df
+    
     with st.status(f"🚀 更新 {category_default}...", expanded=True) as status:
         for index, row in df.iterrows():
             ticker = str(row.get("代號", "")).strip().upper()
