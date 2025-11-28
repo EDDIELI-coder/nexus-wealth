@@ -83,10 +83,9 @@ def get_google_client():
         return gspread.authorize(creds)
     except Exception as e:
         st.error(f"🔥 連線錯誤: {e}")
-        st.stop()
+        return None
 
 def get_service_email():
-    """取得機器人 Email 供使用者除錯"""
     try:
         return st.secrets["gcp_service_account"]["client_email"]
     except:
@@ -170,10 +169,10 @@ def load_data_from_cloud(target_sheet):
     except Exception as e: st.error(f"資料讀取錯誤: {e}")
 
 def save_data_to_cloud(target_sheet, silent=False):
-    """存檔功能：包含重試機制，避免因為網路波動導致崩潰"""
+    """存檔功能：包含重試機制"""
     try:
         sh = init_user_sheet(target_sheet)
-        if not sh: return
+        if not sh: return False
 
         def write_ws(title, df):
             try:
@@ -181,13 +180,12 @@ def save_data_to_cloud(target_sheet, silent=False):
                 ws.clear()
                 
                 df_clean = df.copy()
-                # 確保數值正確
                 num_cols = ["股數", "現值", "金額", "自訂價格", "參考市價", "每月扣款"]
                 for c in num_cols:
                     if c in df_clean.columns:
                         df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
-                # 嚴格過濾無效行 (【修正】使用 .str.lower() 避免 Series 錯誤)
+                # 【關鍵修正】修復 .lower() 導致的 AttributeError
                 if "代號" in df_clean.columns:
                     df_clean = df_clean[
                         (df_clean["代號"].astype(str).str.strip() != "") & 
@@ -204,7 +202,7 @@ def save_data_to_cloud(target_sheet, silent=False):
                 else: 
                     ws.update([df.columns.values.tolist()])
             except Exception as e:
-                print(f"Write Error {title}: {e}")
+                if not silent: st.warning(f"寫入 {title} 失敗: {e}")
 
         write_ws("US_Stocks", pd.DataFrame(st.session_state.us_data))
         write_ws("TW_Stocks", pd.DataFrame(st.session_state.tw_data))
@@ -224,7 +222,7 @@ def save_data_to_cloud(target_sheet, silent=False):
         return True
         
     except Exception as e:
-        if not silent: st.warning(f"⚠️ 存檔時遇到網路問題，請稍後再試: {e}")
+        if not silent: st.error(f"⚠️ 存檔失敗，請檢查網路連線: {e}")
         return False
 
 def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthly_payment):
@@ -287,7 +285,6 @@ def update_portfolio_data(df, category_default):
     if "股數" in df.columns:
         df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
     
-    # 顯示進度條
     progress_text = f"正在更新 {category_default}..."
     my_bar = st.progress(0, text=progress_text)
     total_rows = len(df)
@@ -317,7 +314,7 @@ def update_portfolio_data(df, category_default):
     my_bar.empty()
     return df
 
-# --- 【修正】補回 parse_file 函式 ---
+# --- 檔案解析 ---
 def parse_file(uploaded_file, import_type):
     try:
         if uploaded_file.name.endswith('.csv'): 
@@ -528,9 +525,9 @@ def main_app():
             if st.button("⚡ **UPDATE PRICES (更新股價)**", type="primary", help="更新價格並自動存檔"):
                 st.session_state.us_data = update_portfolio_data(st.session_state.us_data, "美股").to_dict('records')
                 st.session_state.tw_data = update_portfolio_data(st.session_state.tw_data, "台股").to_dict('records')
-                # 【關鍵】更新完立刻存檔，防止網路中斷導致資料遺失
-                save_data_to_cloud(st.session_state.target_sheet)
-                st.rerun()
+                # 【關鍵修正】防止因更新失敗導致的資料遺失
+                if save_data_to_cloud(st.session_state.target_sheet):
+                    st.rerun()
 
         with st.expander("📂 **Smart Import (匯入 Excel/CSV)**"):
             import_type = st.selectbox("匯入類型", ["🇺🇸 美股/Crypto", "🇹🇼 台股", "🏠 固定資產", "💳 負債"])
@@ -609,7 +606,7 @@ def main_app():
                 else:
                     cfg = {
                         "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
-                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0), 
+                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0),
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
@@ -715,7 +712,6 @@ def main_app():
             with c_v1:
                 st.subheader("資產分佈")
                 fig = px.sunburst(df_assets, path=['類別', '資產'], values='價值', color='類別')
-                # 【關鍵修正】讓點擊區塊後佔比變 100%
                 fig.update_traces(textinfo="label+percent entry", insidetextorientation='horizontal')
                 fig.update_layout(
                     template="plotly_dark",
