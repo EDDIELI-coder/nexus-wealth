@@ -467,6 +467,8 @@ def main_app():
                 
                 # 【關鍵修正】把刪除欄位移到最左邊 (Column Reorder)
                 cols_order = ["❌"] + [c for c in df.columns if c != "❌"]
+                
+                # 這裡要先把 df 的欄位順序排好，st.data_editor 才會照這個順序顯示
                 df = df[cols_order]
 
                 num_class = "cat-val-num-red" if is_liability else "cat-val-num"
@@ -485,11 +487,13 @@ def main_app():
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除")
                     }
                 
+                # 在 data_editor 中加入 column_order 參數強制排序
                 edited = st.data_editor(
                     df, 
                     num_rows="fixed",
                     key=f"e_{key}", 
                     column_config=cfg,
+                    column_order=cols_order, # 強制指定顯示順序
                     use_container_width=True
                 )
 
