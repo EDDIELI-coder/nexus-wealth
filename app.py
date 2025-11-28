@@ -120,7 +120,7 @@ def init_user_sheet(target_sheet_name):
     except: pass
     return sh
 
-# --- 3. 資料邏輯 (含自動清理) ---
+# --- 3. 資料邏輯 ---
 
 def load_data_from_cloud(target_sheet):
     try:
@@ -129,7 +129,6 @@ def load_data_from_cloud(target_sheet):
             try:
                 data = sh.worksheet(title).get_all_records()
                 df = pd.DataFrame(data)
-                # 補齊缺失欄位
                 for c in cols:
                     if c not in df.columns: df[c] = ""
                 return df
@@ -157,47 +156,28 @@ def save_data_to_cloud(target_sheet):
                 ws = sh.worksheet(title)
                 ws.clear()
                 
-                # 【自動清理邏輯】
-                # 1. 移除全空行
-                # 2. 針對股票：移除代號為空或股數為0的行
-                # 3. 針對資產：移除項目為空或現值為0的行
-                
+                # 自動清理無效行 (空代號或名稱)
                 df_clean = df.copy()
-                
-                # 確保數值欄位是數字，方便判斷
                 num_cols = ["股數", "現值", "金額", "自訂價格", "參考市價", "每月扣款"]
                 for c in num_cols:
                     if c in df_clean.columns:
                         df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
-                # 執行過濾
-                if "代號" in df_clean.columns: # 股票類
-                    df_clean = df_clean[
-                        (df_clean["代號"].astype(str).str.strip() != "") & 
-                        (df_clean["代號"].astype(str).str.strip() != "None") &
-                        (df_clean["股數"] > 0)
-                    ]
-                elif "資產項目" in df_clean.columns: # 固定資產
-                    df_clean = df_clean[
-                        (df_clean["資產項目"].astype(str).str.strip() != "") &
-                        (df_clean["資產項目"].astype(str).str.strip() != "None")
-                    ]
-                elif "負債項目" in df_clean.columns: # 負債
-                    df_clean = df_clean[
-                        (df_clean["負債項目"].astype(str).str.strip() != "") &
-                        (df_clean["負債項目"].astype(str).str.strip() != "None")
-                    ]
+                if "代號" in df_clean.columns:
+                    df_clean = df_clean[df_clean["代號"].astype(str).str.strip() != ""]
+                elif "資產項目" in df_clean.columns:
+                    df_clean = df_clean[df_clean["資產項目"].astype(str).str.strip() != ""]
+                elif "負債項目" in df_clean.columns:
+                    df_clean = df_clean[df_clean["負債項目"].astype(str).str.strip() != ""]
 
                 if not df_clean.empty:
-                    df_clean = df_clean.fillna("") # 填補 NaN 為空字串給 Google Sheets
+                    df_clean = df_clean.fillna("")
                     ws.update([df_clean.columns.values.tolist()] + df_clean.values.tolist())
                 else: 
-                    # 至少寫入標題，不然下次讀取會沒欄位
                     ws.update([df.columns.values.tolist()])
             except Exception as e:
                 print(f"Write Error {title}: {e}")
 
-        # 將 Session State 轉為 DataFrame 並存檔
         write_ws("US_Stocks", pd.DataFrame(st.session_state.us_data))
         write_ws("TW_Stocks", pd.DataFrame(st.session_state.tw_data))
         write_ws("Fixed_Assets", pd.DataFrame(st.session_state.fixed_data))
@@ -210,7 +190,7 @@ def save_data_to_cloud(target_sheet):
             {"Key": "return_rate", "Value": st.session_state.saved_return}
         ])
         write_ws("Settings", settings_data)
-        st.toast("✅ 雲端同步完成 (已自動清除無效空行)", icon="☁️")
+        st.toast("✅ 雲端同步完成", icon="☁️")
         
     except Exception as e: st.error(f"存檔失敗: {e}")
 
@@ -244,17 +224,13 @@ def update_portfolio_data(df, category_default):
     df = pd.DataFrame(df)
     if df.empty: return df
     
-    # 預先轉型
     if "股數" in df.columns:
         df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
     
     with st.status(f"🚀 更新 {category_default}...", expanded=True) as status:
         for index, row in df.iterrows():
             ticker = str(row.get("代號", "")).strip().upper()
-            
-            # 跳過無效代號
             if not ticker or ticker == "NAN" or ticker == "NONE": continue
-            
             status.update(label=f"下載: {ticker}...", state="running")
             price = get_precise_price(ticker)
             if price > 0: df.at[index, "參考市價"] = price
@@ -394,12 +370,10 @@ def main_app():
     df_liab = pd.DataFrame(st.session_state.liab_data)
 
     assets_list = []
-    # 計算資產總值 & 準備畫圖資料
     for _, row in df_us.iterrows():
         p = float(row.get("自訂價格", 0) or 0)
         if p <= 0: p = float(row.get("參考市價", 0) or 0)
         v = p * float(row.get("股數", 0) or 0) * EXCHANGE_RATE
-        # 確保代號存在才加入列表，避免空資料導致畫圖崩潰
         code = str(row.get("代號", "")).strip()
         if code and code != "None" and v > 0:
             disp_name = code
@@ -471,11 +445,9 @@ def main_app():
                 total_cat_val = 0
                 vals = []
                 if "股數" in df.columns:
-                    # 確保數字正確
                     df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
                     df["自訂價格"] = pd.to_numeric(df.get("自訂價格", 0), errors='coerce').fillna(0)
                     df["參考市價"] = pd.to_numeric(df.get("參考市價", 0), errors='coerce').fillna(0)
-                    
                     for _, r in df.iterrows():
                         p = float(r.get("自訂價格",0))
                         if p<=0: p = float(r.get("參考市價",0))
@@ -490,22 +462,24 @@ def main_app():
                     v_col = pd.to_numeric(df["金額"], errors='coerce').fillna(0)
                     total_cat_val = v_col.sum()
 
+                # 加入刪除欄位 (Checkbox)
+                df["❌"] = False
+
                 num_class = "cat-val-num-red" if is_liability else "cat-val-num"
                 val_str = "****" if privacy_mode else f"${total_cat_val:,.0f}"
                 
-                st.markdown(f"""
-                    <div>
-                        <p class='cat-val-label'>類別總值 (TWD)</p>
-                        <p class='{num_class}'>{val_str}</p>
-                    </div>
-                """, unsafe_allow_html=True)
+                st.markdown(f"""<div><p class='cat-val-label'>類別總值 (TWD)</p><p class='{num_class}'>{val_str}</p></div>""", unsafe_allow_html=True)
 
                 cfg = {}
                 if privacy_mode:
-                    df.loc[:] = "****"
+                    df.loc[:, df.columns != "❌"] = "****"
                     cfg = {c: st.column_config.Column(disabled=True) for c in df.columns}
+                    cfg["❌"] = st.column_config.CheckboxColumn(disabled=True)
                 else:
-                    cfg = {"總值(TWD)": st.column_config.NumberColumn(format="$%d", disabled=True)}
+                    cfg = {
+                        "總值(TWD)": st.column_config.NumberColumn(format="$%d", disabled=True),
+                        "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除")
+                    }
                 
                 edited = st.data_editor(
                     df, 
@@ -515,25 +489,34 @@ def main_app():
                     use_container_width=True
                 )
 
-                if st.button(f"➕ 新增一筆", key=f"add_{key}"):
-                    new_row = {c: "" for c in cols}
-                    if "類別" in cols: 
-                        if "us" in key: new_row["類別"] = "美股"
-                        elif "tw" in key: new_row["類別"] = "台股"
-                        elif "fixed" in key: new_row["類別"] = "固定"
-                    
-                    current_data = st.session_state[key]
-                    if isinstance(current_data, pd.DataFrame):
-                        current_data = current_data.to_dict('records')
-                    current_data.append(new_row)
-                    st.session_state[key] = current_data
-                    st.rerun()
+                col_add, col_gap = st.columns([1, 5])
+                with col_add:
+                    if st.button(f"➕ 新增一筆", key=f"add_{key}"):
+                        new_row = {c: "" for c in cols}
+                        if "類別" in cols: 
+                            if "us" in key: new_row["類別"] = "美股"
+                            elif "tw" in key: new_row["類別"] = "台股"
+                            elif "fixed" in key: new_row["類別"] = "固定"
+                        
+                        current_data = st.session_state[key]
+                        if isinstance(current_data, pd.DataFrame):
+                            current_data = current_data.to_dict('records')
+                        current_data.append(new_row)
+                        st.session_state[key] = current_data
+                        st.rerun()
 
                 if not privacy_mode:
-                    save_cols = [c for c in edited.columns if c != "總值(TWD)"]
-                    # 存檔時先過濾空值
-                    cleaned_data = edited[save_cols].copy()
-                    st.session_state[key] = cleaned_data.to_dict('records')
+                    if edited["❌"].any():
+                        # 執行刪除
+                        edited = edited[~edited["❌"]]
+                        save_cols = [c for c in edited.columns if c not in ["總值(TWD)", "❌"]]
+                        st.session_state[key] = edited[save_cols].to_dict('records')
+                        st.toast("已刪除項目")
+                        st.rerun()
+                    else:
+                        # 正常更新
+                        save_cols = [c for c in edited.columns if c not in ["總值(TWD)", "❌"]]
+                        st.session_state[key] = edited[save_cols].to_dict('records')
 
         c1, c2 = st.columns(2)
         with c1: show_editor("🇺🇸 美股/虛擬貨幣 (US Stocks & Crypto)", "us_data", ["代號","股數","參考市價"], EXCHANGE_RATE)
