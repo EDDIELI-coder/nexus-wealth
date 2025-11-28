@@ -73,7 +73,6 @@ def get_google_client():
             st.stop()
 
         creds_dict = dict(st.secrets["gcp_service_account"])
-        # 自動修復私鑰格式
         if "private_key" in creds_dict:
             key = creds_dict["private_key"]
             if "\\n" in key: key = key.replace("\\n", "\n")
@@ -83,7 +82,7 @@ def get_google_client():
         return gspread.authorize(creds)
     except Exception as e:
         st.error(f"🔥 連線錯誤: {e}")
-        return None
+        st.stop()
 
 def get_service_email():
     try:
@@ -165,11 +164,13 @@ def load_data_from_cloud(target_sheet):
         st.session_state.saved_age = int(settings.get("age", 27))
         st.session_state.saved_savings = float(settings.get("savings", 325000))
         st.session_state.saved_return = float(settings.get("return_rate", 11.0))
+        # 新增：載入通膨率，預設為 3.0
+        st.session_state.saved_inflation = float(settings.get("inflation_rate", 3.0))
+        
         st.session_state.data_loaded = True
     except Exception as e: st.error(f"資料讀取錯誤: {e}")
 
 def save_data_to_cloud(target_sheet, silent=False):
-    """存檔功能：包含重試機制"""
     try:
         sh = init_user_sheet(target_sheet)
         if not sh: return False
@@ -185,7 +186,6 @@ def save_data_to_cloud(target_sheet, silent=False):
                     if c in df_clean.columns:
                         df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
-                # 【關鍵修正】修復 .lower() 導致的 AttributeError
                 if "代號" in df_clean.columns:
                     df_clean = df_clean[
                         (df_clean["代號"].astype(str).str.strip() != "") & 
@@ -209,11 +209,13 @@ def save_data_to_cloud(target_sheet, silent=False):
         write_ws("Fixed_Assets", pd.DataFrame(st.session_state.fixed_data))
         write_ws("Liabilities", pd.DataFrame(st.session_state.liab_data))
         
+        # 新增：儲存通膨率
         settings_data = pd.DataFrame([
             {"Key": "expense", "Value": st.session_state.saved_expense},
             {"Key": "age", "Value": st.session_state.saved_age},
             {"Key": "savings", "Value": st.session_state.saved_savings},
-            {"Key": "return_rate", "Value": st.session_state.saved_return}
+            {"Key": "return_rate", "Value": st.session_state.saved_return},
+            {"Key": "inflation_rate", "Value": st.session_state.saved_inflation}
         ])
         write_ws("Settings", settings_data)
         
@@ -239,7 +241,6 @@ def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthl
         ws.append_row([today, net_worth, assets, liabilities, monthly_payment])
     except: pass
 
-# --- 【核心功能】智慧型股價與代號修正 ---
 def fetch_smart_ticker_data(symbol):
     symbol = str(symbol).strip().upper()
     
@@ -314,7 +315,6 @@ def update_portfolio_data(df, category_default):
     my_bar.empty()
     return df
 
-# --- 檔案解析 ---
 def parse_file(uploaded_file, import_type):
     try:
         if uploaded_file.name.endswith('.csv'): 
@@ -373,25 +373,31 @@ def parse_file(uploaded_file, import_type):
         return pd.DataFrame(new_data), None
     except Exception as e: return None, f"解析失敗: {str(e)}"
 
+# --- 7. FIRE 曲線 ---
 def calculate_fire_curves_advanced(current_age, investable_assets, house_value, savings, invest_return, house_growth, inflation, custom_expense, include_house_growth):
     ages = list(range(current_age, 66))
     curr_invest = investable_assets
     curr_house = house_value
     wealth_curve = [curr_invest + curr_house]
+    
     levels = {"Lean": 600000, "Barista": 800000, "Regular": 1000000, "Fat": 2500000}
     level_curves = {k: [v * 25] for k, v in levels.items()}
     custom_target = [custom_expense * 25]
+    
     curr_levels = {k: v * 25 for k, v in levels.items()}
     curr_custom = custom_expense * 25
+    
     for _ in range(len(ages) - 1):
         curr_invest = (curr_invest + savings) * (1 + invest_return/100)
         if include_house_growth and curr_house > 0: curr_house = curr_house * (1 + house_growth/100)
         wealth_curve.append(curr_invest + curr_house)
         for k in curr_levels:
-            curr_levels[k] *= (1 + inflation/100)
+            curr_levels[k] *= (1 + inflation/100) # 通膨影響
             level_curves[k].append(curr_levels[k])
-        curr_custom *= (1 + inflation/100)
+        
+        curr_custom *= (1 + inflation/100) # 目標隨通膨增加
         custom_target.append(curr_custom)
+            
     return ages, wealth_curve, level_curves, custom_target
 
 def predict_portfolio_return_detail(df_assets, include_house):
@@ -521,11 +527,9 @@ def main_app():
     with tab_edit:
         c_btn, _ = st.columns([1, 4])
         with c_btn:
-            # 這裡觸發智慧更新 + 存檔
             if st.button("⚡ **UPDATE PRICES (更新股價)**", type="primary", help="更新價格並自動存檔"):
                 st.session_state.us_data = update_portfolio_data(st.session_state.us_data, "美股").to_dict('records')
                 st.session_state.tw_data = update_portfolio_data(st.session_state.tw_data, "台股").to_dict('records')
-                # 【關鍵修正】防止因更新失敗導致的資料遺失
                 if save_data_to_cloud(st.session_state.target_sheet):
                     st.rerun()
 
@@ -680,14 +684,25 @@ def main_app():
                 st.session_state.saved_return = r
                 st.info(exp)
             my_return = st.slider("年化報酬率 (%)", 0.0, 20.0, float(st.session_state.saved_return), 0.1)
+            # 新增：預期通膨率
+            my_inflation = st.slider("預期通貨膨脹率 (%)", 0.0, 10.0, float(st.session_state.saved_inflation), 0.1)
+            
             my_expense = st.number_input("目標年支出", value=float(st.session_state.saved_expense), step=10000.0)
             my_age = st.number_input("目前年齡", value=int(st.session_state.saved_age))
             my_savings = st.number_input("年儲蓄金額", value=float(st.session_state.saved_savings), step=10000.0)
-            if my_return != st.session_state.saved_return or my_expense != st.session_state.saved_expense:
+            
+            # 檢查是否變更並存檔
+            if (my_return != st.session_state.saved_return or 
+                my_expense != st.session_state.saved_expense or 
+                my_inflation != st.session_state.saved_inflation):
+                
                 st.session_state.saved_return = my_return
                 st.session_state.saved_expense = my_expense
                 st.session_state.saved_age = my_age
                 st.session_state.saved_savings = my_savings
+                st.session_state.saved_inflation = my_inflation
+                if auto_sync: save_data_to_cloud(st.session_state.target_sheet, silent=True)
+                
         with c_f2:
             st.subheader("資產累積預測")
             if not df_assets.empty:
@@ -698,7 +713,7 @@ def main_app():
                 house_part = 0
 
             ages, wealth_c, fire_c, custom_c = calculate_fire_curves_advanced(
-                my_age, base_wealth - house_part, house_part, my_savings, my_return, 3.0, 3.0, my_expense, include_house
+                my_age, base_wealth - house_part, house_part, my_savings, my_return, 3.0, my_inflation, my_expense, include_house
             )
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=ages, y=wealth_c, name="預測資產", line=dict(color='#00F0FF', width=4)))
