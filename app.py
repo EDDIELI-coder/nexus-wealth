@@ -47,27 +47,6 @@ st.markdown("""
 ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
-def clean_private_key(key):
-    """萬能金鑰修復器：處理各種奇怪的換行符號問題"""
-    # 1. 處理字面上的 \n (兩個字元變一個換行符)
-    key = key.replace("\\n", "\n")
-    
-    # 2. 移除前後多餘的引號 (如果有貼錯)
-    key = key.strip('"').strip("'")
-    
-    # 3. 確保 BEGIN 和 END 單獨一行
-    if "-----BEGIN PRIVATE KEY-----" in key:
-        # 如果 BEGIN 後面沒有換行，強制加換行
-        if "-----BEGIN PRIVATE KEY-----\n" not in key:
-            key = key.replace("-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n")
-    
-    if "-----END PRIVATE KEY-----" in key:
-        # 如果 END 前面沒有換行，強制加換行
-        if "\n-----END PRIVATE KEY-----" not in key:
-            key = key.replace("-----END PRIVATE KEY-----", "\n-----END PRIVATE KEY-----")
-            
-    return key
-
 def get_google_client():
     """連線到 Google"""
     scopes = [
@@ -76,21 +55,27 @@ def get_google_client():
     ]
     
     try:
+        # 檢查 Secrets 是否存在
         if "gcp_service_account" not in st.secrets:
             st.error("❌ 找不到 Secrets 設定，請檢查 Streamlit 後台。")
             st.stop()
 
+        # 讀取 Secrets
         creds_dict = dict(st.secrets["gcp_service_account"])
         
-        # 套用萬能修復器
+        # 【關鍵修復】處理私鑰格式
+        # 你的 JSON 檔案裡私鑰是單行且包含 \n 字串，這裡必須將其轉回真正的換行符號
         if "private_key" in creds_dict:
-            creds_dict["private_key"] = clean_private_key(creds_dict["private_key"])
+            key = creds_dict["private_key"]
+            if "\\n" in key:
+                key = key.replace("\\n", "\n")
+            creds_dict["private_key"] = key
 
+        # 建立連線
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
         
     except Exception as e:
-        # 顯示更詳細的錯誤，幫助除錯
         st.error(f"🔥 連線發生錯誤: {e}")
         st.stop()
 
@@ -102,6 +87,7 @@ def check_login(username, password):
         users_data = ws.get_all_records()
         
         for user in users_data:
+            # 寬鬆比對 (移除前後空白)
             if str(user.get('Username')).strip() == str(username).strip() and \
                str(user.get('Password')).strip() == str(password).strip():
                 return str(user.get('Target_Sheet'))
