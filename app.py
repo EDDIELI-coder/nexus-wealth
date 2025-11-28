@@ -55,13 +55,12 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端資料庫核心 (效能優化版) ---
+# --- 2. 雲端資料庫核心 (使用快取加速) ---
 
 ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
-# 【關鍵優化】加入快取 (Cache)，避免每次動作都重新連線 Google，大幅提升速度並減少錯誤
-@st.cache_resource(ttl=600) # 快取 10 分鐘
+@st.cache_resource(ttl=600)
 def get_google_client():
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
@@ -70,7 +69,7 @@ def get_google_client():
     try:
         if "gcp_service_account" not in st.secrets:
             st.error("❌ 找不到 Secrets 設定。")
-            return None
+            st.stop()
 
         creds_dict = dict(st.secrets["gcp_service_account"])
         if "private_key" in creds_dict:
@@ -170,11 +169,11 @@ def save_data_to_cloud(target_sheet):
                     if c in df_clean.columns:
                         df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
+                # 嚴格過濾無效行
                 if "代號" in df_clean.columns:
                     df_clean = df_clean[
                         (df_clean["代號"].astype(str).str.strip() != "") & 
-                        (df_clean["代號"].astype(str).str.strip().lower() != "nan") &
-                        (df_clean["代號"].astype(str).str.strip() != "0")
+                        (df_clean["代號"].astype(str).str.strip().lower() != "nan")
                     ]
                 elif "資產項目" in df_clean.columns:
                     df_clean = df_clean[df_clean["資產項目"].astype(str).str.strip() != ""]
@@ -219,18 +218,51 @@ def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthl
         ws.append_row([today, net_worth, assets, liabilities, monthly_payment])
     except: pass
 
-def get_precise_price(ticker):
+# --- 【核心功能】智慧型股價與代號修正 ---
+def fetch_smart_ticker_data(symbol):
+    """
+    智慧解析: 輸入 'vti' -> 回傳 'VTI', price, name
+    輸入 '0050' -> 回傳 '0050.TW', price, name
+    """
+    symbol = str(symbol).strip().upper()
+    
+    # 1. 嘗試直接抓取 (針對標準美股)
+    t = yf.Ticker(symbol)
     try:
-        if not ticker: return 0
-        stock = yf.Ticker(str(ticker).strip())
-        price = 0.0
-        if hasattr(stock, 'fast_info'): price = stock.fast_info.get('last_price', 0.0)
-        if price == 0: price = stock.info.get('regularMarketPrice', 0.0)
-        if price == 0:
-            hist = stock.history(period="1d")
-            if not hist.empty: price = hist['Close'].iloc[-1]
-        return float(price)
-    except: return 0.0
+        hist = t.history(period="1d")
+        if not hist.empty:
+            return hist['Close'].iloc[-1], symbol, t.info.get('shortName', symbol)
+    except: pass
+
+    # 2. 台股防呆 (0050 -> 0050.TW)
+    if symbol.isdigit():
+        try_sym = f"{symbol}.TW"
+        t = yf.Ticker(try_sym)
+        try:
+            hist = t.history(period="1d")
+            if not hist.empty:
+                return hist['Close'].iloc[-1], try_sym, t.info.get('shortName', try_sym)
+        except: pass
+        
+        try_sym = f"{symbol}.TWO" # 上櫃
+        t = yf.Ticker(try_sym)
+        try:
+            hist = t.history(period="1d")
+            if not hist.empty:
+                return hist['Close'].iloc[-1], try_sym, t.info.get('shortName', try_sym)
+        except: pass
+
+    # 3. 虛擬貨幣防呆 (BTC -> BTC-USD)
+    if len(symbol) <= 5 and symbol.isalpha():
+        try_sym = f"{symbol}-USD"
+        t = yf.Ticker(try_sym)
+        try:
+            hist = t.history(period="1d")
+            if not hist.empty:
+                return hist['Close'].iloc[-1], try_sym, t.info.get('shortName', try_sym)
+        except: pass
+        
+    return 0.0, symbol, ""
 
 def update_portfolio_data(df, category_default):
     df = pd.DataFrame(df)
@@ -239,62 +271,37 @@ def update_portfolio_data(df, category_default):
     if "股數" in df.columns:
         df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
     
-    with st.status(f"🚀 更新 {category_default}...", expanded=True) as status:
-        for index, row in df.iterrows():
-            ticker = str(row.get("代號", "")).strip().upper()
-            if not ticker or ticker == "NAN" or ticker == "NONE": continue
-            status.update(label=f"下載: {ticker}...", state="running")
-            price = get_precise_price(ticker)
-            if price > 0: df.at[index, "參考市價"] = price
+    # 顯示進度條，提升體驗
+    progress_text = "正在連線更新股價..."
+    my_bar = st.progress(0, text=progress_text)
+    total_rows = len(df)
+    
+    for index, row in df.iterrows():
+        ticker = str(row.get("代號", "")).strip()
+        
+        # 更新進度
+        my_bar.progress((index + 1) / total_rows, text=f"正在更新: {ticker}")
+        
+        if not ticker or ticker == "nan": continue
+        
+        # 呼叫智慧解析
+        price, valid_symbol, name = fetch_smart_ticker_data(ticker)
+        
+        if price > 0:
+            df.at[index, "參考市價"] = price
+            # 自動修正代號回寫表格
+            if valid_symbol != ticker:
+                 df.at[index, "代號"] = valid_symbol
+            # 自動補全名稱
+            if pd.isna(row.get("名稱")) or str(row.get("名稱")).strip() == "":
+                df.at[index, "名稱"] = name
+        
+        if pd.isna(row.get("類別")) or str(row.get("類別")) == "":
+            df.at[index, "類別"] = category_default
             
-            if pd.isna(row.get("名稱")) or str(row.get("名稱")) == "":
-                try: df.at[index, "名稱"] = yf.Ticker(ticker).info.get('shortName', ticker)
-                except: pass
-            if pd.isna(row.get("類別")) or str(row.get("類別")) == "":
-                df.at[index, "類別"] = category_default
-        status.update(label="✅ 完成", state="complete", expanded=False)
+    my_bar.empty() # 清除進度條
+    st.toast(f"✅ {category_default} 更新完成！")
     return df
-
-def parse_file(uploaded_file, import_type):
-    try:
-        if uploaded_file.name.endswith('.csv'): 
-            try: df = pd.read_csv(uploaded_file, encoding='utf-8')
-            except: df = pd.read_csv(uploaded_file, encoding='cp950')
-        elif uploaded_file.name.endswith(('.xls', '.xlsx')): df = pd.read_excel(uploaded_file)
-        else: return None, "格式不支援"
-
-        df.columns = [str(c).lower().strip() for c in df.columns]
-        new_data = []
-        if import_type in ["stock_us", "stock_tw"]:
-            ticker_col = next((c for c in df.columns if c in ['ticker', 'symbol', '代號', '股票代號']), None)
-            shares_col = next((c for c in df.columns if c in ['shares', 'quantity', '股數', '數量', 'qty']), None)
-            price_col = next((c for c in df.columns if c in ['price', 'cost', '自訂價格', '成本']), None)
-            if not ticker_col or not shares_col: return None, "缺少 [代號] 或 [股數]"
-            df[ticker_col] = df[ticker_col].astype(str).str.strip().str.upper()
-            df[shares_col] = pd.to_numeric(df[shares_col], errors='coerce').fillna(0)
-            for _, row in df.iterrows():
-                new_data.append({
-                    "代號": row[ticker_col], "名稱": "", 
-                    "股數": float(row[shares_col]),
-                    "類別": "美股" if import_type == "stock_us" else "台股",
-                    "自訂價格": float(row[price_col]) if price_col else 0.0, "參考市價": 0.0
-                })
-        elif import_type == "fixed":
-            name_col = next((c for c in df.columns if c in ['item', 'name', '資產項目', '名稱']), None)
-            val_col = next((c for c in df.columns if c in ['value', 'amount', '現值', '金額']), None)
-            if not name_col or not val_col: return None, "缺少 [資產項目] 或 [現值]"
-            for _, row in df.iterrows():
-                new_data.append({"資產項目": row[name_col], "現值": float(row[val_col]), "類別": "固定資產"})
-        elif import_type == "liab":
-            name_col = next((c for c in df.columns if c in ['item', 'name', '負債項目', '名稱']), None)
-            amount_col = next((c for c in df.columns if c in ['amount', '金額']), None)
-            monthly_col = next((c for c in df.columns if c in ['monthly', 'payment', '每月扣款']), None)
-            if not name_col or not amount_col: return None, "缺少 [負債項目] 或 [金額]"
-            for _, row in df.iterrows():
-                m_val = float(row[monthly_col]) if monthly_col else 0.0
-                new_data.append({"負債項目": row[name_col], "金額": float(row[amount_col]), "每月扣款": m_val})
-        return pd.DataFrame(new_data), None
-    except Exception as e: return None, str(e)
 
 def calculate_fire_curves_advanced(current_age, investable_assets, house_value, savings, invest_return, house_growth, inflation, custom_expense, include_house_growth):
     ages = list(range(current_age, 66))
@@ -389,6 +396,7 @@ def main_app():
     df_liab = ensure_cols(pd.DataFrame(st.session_state.liab_data), ["負債項目", "金額", "每月扣款"])
 
     assets_list = []
+    # 產生報表數據 (過濾空值)
     if not df_us.empty:
         for _, row in df_us.iterrows():
             p = float(row.get("自訂價格", 0) or 0)
@@ -442,6 +450,7 @@ def main_app():
     with tab_edit:
         c_btn, _ = st.columns([1, 4])
         with c_btn:
+            # 這裡觸發智慧更新
             if st.button("⚡ **UPDATE PRICES (更新股價)**", type="primary"):
                 st.session_state.us_data = update_portfolio_data(st.session_state.us_data, "美股").to_dict('records')
                 st.session_state.tw_data = update_portfolio_data(st.session_state.tw_data, "台股").to_dict('records')
@@ -525,7 +534,7 @@ def main_app():
                 else:
                     cfg = {
                         "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
-                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0), 
+                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0),
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
@@ -549,7 +558,7 @@ def main_app():
                     use_container_width=True
                 )
 
-                # 【關鍵優化】批次新增
+                # 批次新增功能
                 col_n, col_btn = st.columns([1, 2])
                 rows_to_add = col_n.number_input("行數", min_value=1, max_value=20, value=1, key=f"num_{key}", label_visibility="collapsed")
                 
@@ -564,7 +573,6 @@ def main_app():
                     if isinstance(current_data, pd.DataFrame):
                         current_data = current_data.to_dict('records')
                     
-                    # 批次追加
                     for _ in range(rows_to_add):
                         current_data.append(new_row.copy())
                         
