@@ -9,7 +9,7 @@ from datetime import date
 from streamlit import runtime
 import os
 import sys
-import re # 新增：用於強力修復金鑰格式
+import json # 引入 JSON 模組
 
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
@@ -44,39 +44,32 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端資料庫核心 (Google Sheets) - 終極修復版 ---
+# --- 2. 雲端資料庫核心 (Google Sheets) - JSON 直讀版 ---
 
 ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
 def get_google_client():
-    """連線到 Google，包含終極 Key 修復機制"""
+    """連線到 Google，使用最穩定的 JSON 字串解析"""
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     
-    # 讀取 Secrets
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    
-    # 【終極修復】: 無論 Key 貼成什麼樣，都強制修復成正確格式
-    if "private_key" in creds_dict:
-        key = creds_dict["private_key"]
-        # 1. 處理標準的 \\n 轉 \n
-        key = key.replace("\\n", "\n")
-        # 2. 處理如果頭尾有引號
-        key = key.strip('"').strip("'")
+    try:
+        # 嘗試讀取新的 gcp_json 設定 (整串 JSON 文字)
+        if "gcp_json" in st.secrets and "text_content" in st.secrets["gcp_json"]:
+            json_str = st.secrets["gcp_json"]["text_content"]
+            creds_dict = json.loads(json_str)
+        else:
+            # 相容舊設定 (如果使用者還沒更新 Secrets)
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            if "private_key" in creds_dict:
+                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        return gspread.authorize(creds)
         
-        # 3. 如果 Key 看起來沒有正確換行 (黏在一起)，嘗試強制分割
-        if "-----BEGIN PRIVATE KEY-----" in key and "\n" not in key:
-            # 這情況很少見，但以防萬一
-            key = key.replace(" PRIVATE KEY-----", " PRIVATE KEY-----\n")
-            key = key.replace("-----END", "\n-----END")
-            key = key.replace(" ", "\n") # 這是最後手段，如果連內容都被空白取代
-            # 修正頭尾因為上面替換可能爛掉的地方
-            key = key.replace("-----\nBEGIN", "-----BEGIN").replace("KEY-----\n", "KEY-----\n")
-        
-        creds_dict["private_key"] = key
-        
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    return gspread.authorize(creds)
+    except Exception as e:
+        st.error(f"⚠️ Secrets 設定錯誤: {e}")
+        st.stop()
 
 def check_login(username, password):
     """驗證帳號密碼"""
@@ -92,10 +85,11 @@ def check_login(username, password):
                 return str(user.get('Target_Sheet'))
         return None
     except Exception as e:
-        # 詳細顯示錯誤，幫助除錯
         st.error(f"登入失敗: {str(e)}")
         if "invalid_grant" in str(e):
-             st.warning("⚠️ 錯誤原因：Google 拒絕連線。這通常是 Secrets 裡的 private_key 格式跑掉了。")
+             st.warning("⚠️ Google 拒絕連線，請檢查 Secrets 設定。")
+        elif "SpreadsheetNotFound" in str(e):
+             st.warning(f"⚠️ 找不到名為 '{ADMIN_DB_NAME}' 的試算表，請確認已建立並分享給機器人。")
         return None
 
 def init_user_sheet(target_sheet_name):
