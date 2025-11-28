@@ -210,18 +210,57 @@ def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthl
         ws.append_row([today, net_worth, assets, liabilities, monthly_payment])
     except: pass
 
-def get_precise_price(ticker):
+# --- 【核心更新】智慧型股價/代號解析器 ---
+def fetch_smart_ticker_data(symbol):
+    """
+    智慧抓取股價與資訊，支援:
+    1. 美股代號自動大寫 (vti -> VTI)
+    2. 台股代號自動加 .TW 或 .TWO (0050 -> 0050.TW)
+    3. 虛擬貨幣自動加 -USD (BTC -> BTC-USD)
+    回傳: (price, valid_symbol, name)
+    """
+    symbol = str(symbol).strip().upper() # 強制轉大寫
+    
+    # 1. 嘗試直接抓取 (針對標準美股)
+    t = yf.Ticker(symbol)
     try:
-        if not ticker: return 0
-        stock = yf.Ticker(str(ticker).strip())
-        price = 0.0
-        if hasattr(stock, 'fast_info'): price = stock.fast_info.get('last_price', 0.0)
-        if price == 0: price = stock.info.get('regularMarketPrice', 0.0)
-        if price == 0:
-            hist = stock.history(period="1d")
-            if not hist.empty: price = hist['Close'].iloc[-1]
-        return float(price)
-    except: return 0.0
+        hist = t.history(period="1d")
+        if not hist.empty:
+            return hist['Close'].iloc[-1], symbol, t.info.get('shortName', symbol)
+    except: pass
+
+    # 2. 台股防呆 (純數字 -> 加上 .TW)
+    if symbol.isdigit():
+        # 嘗試上市
+        try_sym = f"{symbol}.TW"
+        t = yf.Ticker(try_sym)
+        try:
+            hist = t.history(period="1d")
+            if not hist.empty:
+                return hist['Close'].iloc[-1], try_sym, t.info.get('shortName', try_sym)
+        except: pass
+        
+        # 嘗試上櫃 (櫃買中心)
+        try_sym = f"{symbol}.TWO"
+        t = yf.Ticker(try_sym)
+        try:
+            hist = t.history(period="1d")
+            if not hist.empty:
+                return hist['Close'].iloc[-1], try_sym, t.info.get('shortName', try_sym)
+        except: pass
+
+    # 3. 虛擬貨幣防呆 (常見幣種自動加 -USD)
+    # 如果代號是 3~5 個字母，且第一次抓不到，嘗試加 -USD
+    if len(symbol) <= 5 and symbol.isalpha():
+        try_sym = f"{symbol}-USD"
+        t = yf.Ticker(try_sym)
+        try:
+            hist = t.history(period="1d")
+            if not hist.empty:
+                return hist['Close'].iloc[-1], try_sym, t.info.get('shortName', try_sym)
+        except: pass
+        
+    return 0.0, symbol, ""
 
 def update_portfolio_data(df, category_default):
     df = pd.DataFrame(df)
@@ -230,19 +269,29 @@ def update_portfolio_data(df, category_default):
     if "股數" in df.columns:
         df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
     
-    with st.status(f"🚀 更新 {category_default}...", expanded=True) as status:
+    with st.status(f"🚀 更新 {category_default} (含自動修正)...", expanded=True) as status:
         for index, row in df.iterrows():
-            ticker = str(row.get("代號", "")).strip().upper()
-            if not ticker or ticker == "NAN" or ticker == "NONE": continue
-            status.update(label=f"下載: {ticker}...", state="running")
-            price = get_precise_price(ticker)
-            if price > 0: df.at[index, "參考市價"] = price
+            ticker = str(row.get("代號", "")).strip()
             
-            if pd.isna(row.get("名稱")) or str(row.get("名稱")) == "":
-                try: df.at[index, "名稱"] = yf.Ticker(ticker).info.get('shortName', ticker)
-                except: pass
+            if not ticker or ticker == "NAN" or ticker == "NONE": continue
+            
+            status.update(label=f"下載/修正: {ticker}...", state="running")
+            
+            # 使用智慧解析器
+            price, valid_symbol, name = fetch_smart_ticker_data(ticker)
+            
+            if price > 0:
+                df.at[index, "參考市價"] = price
+                # 自動修正代號 (例如把 0050 改成 0050.TW，方便下次使用)
+                if valid_symbol != ticker:
+                     df.at[index, "代號"] = valid_symbol
+                # 自動補全名稱 (如果原本是空的)
+                if pd.isna(row.get("名稱")) or str(row.get("名稱")).strip() == "":
+                    df.at[index, "名稱"] = name
+            
             if pd.isna(row.get("類別")) or str(row.get("類別")) == "":
                 df.at[index, "類別"] = category_default
+                
         status.update(label="✅ 完成", state="complete", expanded=False)
     return df
 
@@ -515,10 +564,9 @@ def main_app():
                     cfg = {c: st.column_config.Column(disabled=True) for c in df.columns}
                     cfg["❌"] = st.column_config.CheckboxColumn(disabled=True)
                 else:
-                    # 【關鍵修復】使用 Keyword Arguments，移除有問題的參數
                     cfg = {
                         "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
-                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0), # 移除 disabled=True，防止版本相容問題
+                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0), 
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
