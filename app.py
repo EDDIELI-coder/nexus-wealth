@@ -14,15 +14,21 @@ import json
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
 
-# CSS 樣式
+# CSS 樣式 (維持你的粗體與卡片設計)
 st.markdown("""
     <style>
-    h1, h2, h3, h4, h5, h6, p, label, li, td, th, .stDataFrame, .stTable {
-        font-family: "Roboto", "Helvetica Neue", "Microsoft JhengHei", sans-serif !important;
+    /* 全局字體設定 - 強制粗體 */
+    h1, h2, h3, h4, h5, h6, p, label, li, td, th, div, span, .stDataFrame, .stTable {
+        font-family: "Roboto", "Microsoft JhengHei", sans-serif !important;
         font-weight: 700 !important;
         line-height: 1.6 !important;
         letter-spacing: 0.5px;
     }
+    
+    /* 修正下拉選單高度 */
+    .stSelectbox div[data-baseweb="select"] > div { min-height: 45px; }
+    
+    /* 卡片樣式 */
     .nexus-card {
         background-color: #1a1a1a; border: 1px solid #333; border-radius: 10px;
         padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
@@ -32,11 +38,14 @@ st.markdown("""
     .nexus-value { color: #00F0FF; font-size: 32px; font-weight: 700; text-shadow: 0 0 10px rgba(0,240,255,0.3); }
     .nexus-value-red { color: #ff4b4b !important; font-size: 32px; font-weight: 700; text-shadow: 0 0 10px rgba(255, 75, 75, 0.3); }
     .nexus-value-orange { color: #ffa500 !important; font-size: 32px; font-weight: 700; text-shadow: 0 0 10px rgba(255, 165, 0, 0.3); }
+    
+    /* 按鈕樣式 */
     div.stButton > button {
         width: 100%; min-height: 50px; border-radius: 12px; border: 1px solid #444;
         background: linear-gradient(145deg, #222, #181818); transition: all 0.3s;
     }
     div.stButton > button:hover { border-color: #00F0FF; transform: translateY(-2px); }
+    
     hr { margin: 1.5em 0; border-color: #444; }
     section[data-testid="stSidebar"] { background-color: #0e0e0e; border-right: 1px solid #222; }
     </style>
@@ -53,26 +62,21 @@ def get_google_client():
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
     ]
-    
     try:
         if "gcp_service_account" not in st.secrets:
-            st.error("❌ 找不到 Secrets 設定，請檢查 Streamlit 後台。")
+            st.error("❌ 找不到 Secrets 設定。")
             st.stop()
 
         creds_dict = dict(st.secrets["gcp_service_account"])
-        
-        # 自動修復私鑰格式
         if "private_key" in creds_dict:
             key = creds_dict["private_key"]
-            if "\\n" in key:
-                key = key.replace("\\n", "\n")
+            if "\\n" in key: key = key.replace("\\n", "\n")
             creds_dict["private_key"] = key
 
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
-        
     except Exception as e:
-        st.error(f"🔥 連線發生錯誤: {e}")
+        st.error(f"🔥 連線錯誤: {e}")
         st.stop()
 
 def check_login(username, password):
@@ -81,24 +85,19 @@ def check_login(username, password):
         sh = client.open(ADMIN_DB_NAME)
         ws = sh.worksheet("Users")
         users_data = ws.get_all_records()
-        
         for user in users_data:
             if str(user.get('Username')).strip() == str(username).strip() and \
                str(user.get('Password')).strip() == str(password).strip():
                 return str(user.get('Target_Sheet'))
         return None
-    except Exception as e:
-        st.error(f"登入失敗: {e}")
-        if "SpreadsheetNotFound" in str(e):
-             st.warning(f"⚠️ 找不到 '{ADMIN_DB_NAME}' 試算表，請確認已建立並分享給機器人。")
-        return None
+    except: return None
 
 def init_user_sheet(target_sheet_name):
     client = get_google_client()
     try:
         sh = client.open(target_sheet_name)
-    except gspread.SpreadsheetNotFound:
-        st.error(f"❌ 找不到試算表：{target_sheet_name}。")
+    except:
+        st.error(f"❌ 找不到試算表：{target_sheet_name}")
         st.stop()
     
     required = {
@@ -109,7 +108,6 @@ def init_user_sheet(target_sheet_name):
         "Settings": ["Key", "Value"],
         "History": ["Date", "Net_Worth", "Total_Assets", "Total_Liabilities", "Monthly_Payment"]
     }
-    
     try:
         curr_titles = [ws.title for ws in sh.worksheets()]
         for title, headers in required.items():
@@ -144,8 +142,7 @@ def load_data_from_cloud(target_sheet):
         st.session_state.saved_savings = float(settings.get("savings", 325000))
         st.session_state.saved_return = float(settings.get("return_rate", 11.0))
         st.session_state.data_loaded = True
-    except Exception as e:
-        st.error(f"資料讀取錯誤: {e}")
+    except Exception as e: st.error(f"資料讀取錯誤: {e}")
 
 def save_data_to_cloud(target_sheet):
     try:
@@ -157,8 +154,7 @@ def save_data_to_cloud(target_sheet):
                 if not df.empty:
                     df = df.fillna(0)
                     ws.update([df.columns.values.tolist()] + df.values.tolist())
-                else:
-                    ws.update([df.columns.values.tolist()])
+                else: ws.update([df.columns.values.tolist()])
             except: pass
 
         write_ws("US_Stocks", pd.DataFrame(st.session_state.us_data))
@@ -174,8 +170,7 @@ def save_data_to_cloud(target_sheet):
         ])
         write_ws("Settings", settings_data)
         st.toast("✅ 同步成功！", icon="☁️")
-    except Exception as e:
-        st.error(f"存檔失敗: {e}")
+    except Exception as e: st.error(f"存檔失敗: {e}")
 
 def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthly_payment):
     today = str(date.today())
@@ -185,8 +180,7 @@ def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthl
         try:
             records = ws.get_all_records()
             df = pd.DataFrame(records)
-            if not df.empty and str(today) in df['Date'].astype(str).values:
-                return
+            if not df.empty and str(today) in df['Date'].astype(str).values: return
         except: pass
         ws.append_row([today, net_worth, assets, liabilities, monthly_payment])
     except: pass
@@ -204,14 +198,9 @@ def get_precise_price(ticker):
         return float(price)
     except: return 0.0
 
-# --- 【關鍵修正】更新股價函式 ---
 def update_portfolio_data(df, category_default):
-    # 1. 無論傳入的是 List 還是 DataFrame，先強制轉成 DataFrame
     df = pd.DataFrame(df)
-    
-    # 2. 現在 df 一定是 DataFrame，可以安全使用 .empty
     if df.empty: return df
-    
     with st.status(f"🚀 更新 {category_default}...", expanded=True) as status:
         for index, row in df.iterrows():
             ticker = str(row.get("代號", "")).strip().upper()
@@ -232,13 +221,11 @@ def parse_file(uploaded_file, import_type):
         if uploaded_file.name.endswith('.csv'): 
             try: df = pd.read_csv(uploaded_file, encoding='utf-8')
             except: df = pd.read_csv(uploaded_file, encoding='cp950')
-        elif uploaded_file.name.endswith(('.xls', '.xlsx')): 
-            df = pd.read_excel(uploaded_file)
+        elif uploaded_file.name.endswith(('.xls', '.xlsx')): df = pd.read_excel(uploaded_file)
         else: return None, "格式不支援"
 
         df.columns = [str(c).lower().strip() for c in df.columns]
         new_data = []
-
         if import_type in ["stock_us", "stock_tw"]:
             ticker_col = next((c for c in df.columns if c in ['ticker', 'symbol', '代號', '股票代號']), None)
             shares_col = next((c for c in df.columns if c in ['shares', 'quantity', '股數', '數量', 'qty']), None)
@@ -324,21 +311,18 @@ def login_page():
             if submitted:
                 target_sheet = check_login(username, password)
                 if target_sheet:
-                    st.success(f"Verified. Welcome {username}.")
                     st.session_state.logged_in = True
                     st.session_state.current_user = username
                     st.session_state.target_sheet = target_sheet
                     st.rerun()
-                else:
-                    st.error("Access Denied. Invalid credentials.")
+                else: st.error("Access Denied.")
 
 def main_app():
     with st.sidebar:
         st.info(f"👤 User: **{st.session_state.current_user}**")
-        privacy_mode = st.toggle("👁️ **隱私模式 (Hide)**", value=False)
+        privacy_mode = st.toggle("👁️ **隱私模式**", value=False)
         st.divider()
-        if st.button("☁️ **手動同步存檔**", type="primary"):
-            save_data_to_cloud(st.session_state.target_sheet)
+        if st.button("☁️ **同步存檔**", type="primary"): save_data_to_cloud(st.session_state.target_sheet)
         st.divider()
         if st.button("🚪 登出系統"):
             st.session_state.clear()
@@ -401,7 +385,7 @@ def main_app():
         with st.expander("📥 **Smart Import (匯入 Excel/CSV)**"):
             import_type = st.selectbox("匯入類型", ["🇺🇸 美股/Crypto", "🇹🇼 台股", "🏠 固定資產", "💳 負債"])
             f = st.file_uploader("檔案上傳", type=['csv','xlsx'])
-            if f and st.button("確認匯入 (覆蓋現有資料)"):
+            if f and st.button("確認匯入"):
                 map_t = {"🇺🇸 美股/Crypto":"stock_us", "🇹🇼 台股":"stock_tw", "🏠 固定資產":"fixed", "💳 負債":"liab"}
                 target_k = {"stock_us":"us_data", "stock_tw":"tw_data", "fixed":"fixed_data", "liab":"liab_data"}[map_t[import_type]]
                 df_new, err = parse_file(f, map_t[import_type])
@@ -474,17 +458,46 @@ def main_app():
 
     with tab_vis:
         if not df_assets.empty:
-            c_v1, c_v2 = st.columns(2)
+            c_v1, c_v2 = st.columns([1, 1])
             with c_v1:
                 st.subheader("資產分佈")
                 fig = px.sunburst(df_assets, path=['類別', '資產'], values='價值', color='類別')
-                fig.update_layout(template="plotly_dark")
+                # 加上百分比標籤
+                fig.update_traces(textinfo="label+percent root")
+                fig.update_layout(
+                    template="plotly_dark",
+                    font=dict(family="Microsoft JhengHei", size=14, color="white"), # 強制粗體字型
+                    margin=dict(t=20, l=20, r=20, b=20)
+                )
                 st.plotly_chart(fig, use_container_width=True)
             with c_v2:
                 st.subheader("持倉排行")
-                df_show = df_assets.sort_values("價值", ascending=False)
-                if privacy_mode: df_show['價值'] = "****"
-                st.dataframe(df_show, use_container_width=True, hide_index=True)
+                df_show = df_assets.copy()
+                total_val = df_show["價值"].sum()
+                # 計算百分比
+                df_show["佔比 (%)"] = (df_show["價值"] / total_val * 100)
+                df_show = df_show.sort_values("價值", ascending=False)
+                
+                if privacy_mode: 
+                    df_show['價值'] = "****"
+                    df_show['佔比 (%)'] = 0
+                
+                st.dataframe(
+                    df_show, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "資產": st.column_config.TextColumn("資產名稱", width="medium"),
+                        "類別": st.column_config.TextColumn("類別", width="small"),
+                        "價值": st.column_config.NumberColumn("總價值 (TWD)", format="$%d"),
+                        "佔比 (%)": st.column_config.ProgressColumn(
+                            "佔比 (%)", 
+                            format="%.1f%%", 
+                            min_value=0, 
+                            max_value=100
+                        ),
+                    }
+                )
 
     with tab_hist:
         st.subheader("資產成長紀錄 (Cloud History)")
