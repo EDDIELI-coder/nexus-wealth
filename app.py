@@ -14,10 +14,10 @@ import json
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
 
-# CSS 樣式 (【關鍵修正】移除 div, span，修復圖示顯示問題)
+# CSS 樣式
 st.markdown("""
     <style>
-    /* 全局字體設定 - 僅針對文字標籤，避開 Icon 所在的標籤 */
+    /* 全局字體設定 */
     h1, h2, h3, h4, h5, h6, p, label, li, td, th, .stDataFrame, .stTable {
         font-family: "Roboto", "Microsoft JhengHei", sans-serif !important;
         line-height: 1.6 !important;
@@ -38,7 +38,7 @@ st.markdown("""
     .nexus-value-red { color: #ff4b4b !important; font-size: 32px; font-weight: 700; text-shadow: 0 0 10px rgba(255, 75, 75, 0.3); }
     .nexus-value-orange { color: #ffa500 !important; font-size: 32px; font-weight: 700; text-shadow: 0 0 10px rgba(255, 165, 0, 0.3); }
     
-    /* 自訂總值顯示樣式 (用於四大區塊) */
+    /* 自訂總值顯示樣式 */
     .cat-val-label { font-size: 14px; color: #aaa; font-weight: bold; margin-bottom: 0px; }
     .cat-val-num { font-size: 36px; font-weight: bold; color: #00F0FF; text-shadow: 0 0 8px rgba(0,240,255,0.2); line-height: 1.2; }
     .cat-val-num-red { font-size: 36px; font-weight: bold; color: #ff4b4b; text-shadow: 0 0 8px rgba(255, 75, 75, 0.2); line-height: 1.2; }
@@ -61,7 +61,6 @@ ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
 def get_google_client():
-    """連線到 Google"""
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
@@ -121,7 +120,7 @@ def init_user_sheet(target_sheet_name):
     except: pass
     return sh
 
-# --- 3. 資料邏輯 ---
+# --- 3. 資料邏輯 (含自動清理) ---
 
 def load_data_from_cloud(target_sheet):
     try:
@@ -130,7 +129,9 @@ def load_data_from_cloud(target_sheet):
             try:
                 data = sh.worksheet(title).get_all_records()
                 df = pd.DataFrame(data)
-                if df.empty: return pd.DataFrame(columns=cols)
+                # 補齊缺失欄位
+                for c in cols:
+                    if c not in df.columns: df[c] = ""
                 return df
             except: return pd.DataFrame(columns=cols)
 
@@ -155,12 +156,48 @@ def save_data_to_cloud(target_sheet):
             try:
                 ws = sh.worksheet(title)
                 ws.clear()
-                if not df.empty:
-                    df = df.fillna(0)
-                    ws.update([df.columns.values.tolist()] + df.values.tolist())
-                else: ws.update([df.columns.values.tolist()])
-            except: pass
+                
+                # 【自動清理邏輯】
+                # 1. 移除全空行
+                # 2. 針對股票：移除代號為空或股數為0的行
+                # 3. 針對資產：移除項目為空或現值為0的行
+                
+                df_clean = df.copy()
+                
+                # 確保數值欄位是數字，方便判斷
+                num_cols = ["股數", "現值", "金額", "自訂價格", "參考市價", "每月扣款"]
+                for c in num_cols:
+                    if c in df_clean.columns:
+                        df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
+                # 執行過濾
+                if "代號" in df_clean.columns: # 股票類
+                    df_clean = df_clean[
+                        (df_clean["代號"].astype(str).str.strip() != "") & 
+                        (df_clean["代號"].astype(str).str.strip() != "None") &
+                        (df_clean["股數"] > 0)
+                    ]
+                elif "資產項目" in df_clean.columns: # 固定資產
+                    df_clean = df_clean[
+                        (df_clean["資產項目"].astype(str).str.strip() != "") &
+                        (df_clean["資產項目"].astype(str).str.strip() != "None")
+                    ]
+                elif "負債項目" in df_clean.columns: # 負債
+                    df_clean = df_clean[
+                        (df_clean["負債項目"].astype(str).str.strip() != "") &
+                        (df_clean["負債項目"].astype(str).str.strip() != "None")
+                    ]
+
+                if not df_clean.empty:
+                    df_clean = df_clean.fillna("") # 填補 NaN 為空字串給 Google Sheets
+                    ws.update([df_clean.columns.values.tolist()] + df_clean.values.tolist())
+                else: 
+                    # 至少寫入標題，不然下次讀取會沒欄位
+                    ws.update([df.columns.values.tolist()])
+            except Exception as e:
+                print(f"Write Error {title}: {e}")
+
+        # 將 Session State 轉為 DataFrame 並存檔
         write_ws("US_Stocks", pd.DataFrame(st.session_state.us_data))
         write_ws("TW_Stocks", pd.DataFrame(st.session_state.tw_data))
         write_ws("Fixed_Assets", pd.DataFrame(st.session_state.fixed_data))
@@ -173,7 +210,8 @@ def save_data_to_cloud(target_sheet):
             {"Key": "return_rate", "Value": st.session_state.saved_return}
         ])
         write_ws("Settings", settings_data)
-        st.toast("✅ 同步成功！", icon="☁️")
+        st.toast("✅ 雲端同步完成 (已自動清除無效空行)", icon="☁️")
+        
     except Exception as e: st.error(f"存檔失敗: {e}")
 
 def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthly_payment):
@@ -205,14 +243,22 @@ def get_precise_price(ticker):
 def update_portfolio_data(df, category_default):
     df = pd.DataFrame(df)
     if df.empty: return df
+    
+    # 預先轉型
+    if "股數" in df.columns:
+        df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
+    
     with st.status(f"🚀 更新 {category_default}...", expanded=True) as status:
         for index, row in df.iterrows():
             ticker = str(row.get("代號", "")).strip().upper()
-            if not ticker or ticker == "NAN": continue
+            
+            # 跳過無效代號
+            if not ticker or ticker == "NAN" or ticker == "NONE": continue
+            
             status.update(label=f"下載: {ticker}...", state="running")
             price = get_precise_price(ticker)
             if price > 0: df.at[index, "參考市價"] = price
-            # 依舊會嘗試抓名稱存檔，但顯示時會優先用代號
+            
             if pd.isna(row.get("名稱")) or str(row.get("名稱")) == "":
                 try: df.at[index, "名稱"] = yf.Ticker(ticker).info.get('shortName', ticker)
                 except: pass
@@ -348,26 +394,31 @@ def main_app():
     df_liab = pd.DataFrame(st.session_state.liab_data)
 
     assets_list = []
-    # 【關鍵修正】這裡優先顯示代號，如果沒有代號才顯示名稱
+    # 計算資產總值 & 準備畫圖資料
     for _, row in df_us.iterrows():
         p = float(row.get("自訂價格", 0) or 0)
         if p <= 0: p = float(row.get("參考市價", 0) or 0)
         v = p * float(row.get("股數", 0) or 0) * EXCHANGE_RATE
-        # 使用代號作為顯示名稱
-        disp_name = row.get("代號") if row.get("代號") else row.get("名稱", "美股")
-        assets_list.append({"資產": disp_name, "類別": row.get("類別","美股"), "價值": v})
+        # 確保代號存在才加入列表，避免空資料導致畫圖崩潰
+        code = str(row.get("代號", "")).strip()
+        if code and code != "None" and v > 0:
+            disp_name = code
+            assets_list.append({"資產": disp_name, "類別": row.get("類別","美股"), "價值": v})
         
     for _, row in df_tw.iterrows():
         p = float(row.get("自訂價格", 0) or 0)
         if p <= 0: p = float(row.get("參考市價", 0) or 0)
         v = p * float(row.get("股數", 0) or 0)
-        # 使用代號作為顯示名稱
-        disp_name = row.get("代號") if row.get("代號") else row.get("名稱", "台股")
-        assets_list.append({"資產": disp_name, "類別": row.get("類別","台股"), "價值": v})
+        code = str(row.get("代號", "")).strip()
+        if code and code != "None" and v > 0:
+            disp_name = code
+            assets_list.append({"資產": disp_name, "類別": row.get("類別","台股"), "價值": v})
         
     for _, row in df_fixed.iterrows():
-        # 固定資產沒有代號，就用資產項目名稱
-        assets_list.append({"資產": row.get("資產項目",""), "類別": row.get("類別","固定"), "價值": float(row.get("現值", 0) or 0)})
+        name = str(row.get("資產項目", "")).strip()
+        v = float(row.get("現值", 0) or 0)
+        if name and name != "None" and v > 0:
+            assets_list.append({"資產": name, "類別": row.get("類別","固定"), "價值": v})
 
     df_assets = pd.DataFrame(assets_list)
     total_assets = df_assets["價值"].sum() if not df_assets.empty else 0
@@ -410,21 +461,25 @@ def main_app():
                 else: st.error(err)
 
         def show_editor(title, key, cols, rate=1.0, is_liability=False):
-            # 使用 st.container(border=True) 讓每個區塊有獨立框線
             with st.container(border=True):
-                st.markdown(f"#### {title}") # 標題
+                st.markdown(f"#### {title}")
                 
                 df = pd.DataFrame(st.session_state[key])
                 if df.empty: df = pd.DataFrame(columns=cols)
                 
-                # 1. 計算該類別總金額
+                # 計算總金額
                 total_cat_val = 0
                 vals = []
                 if "股數" in df.columns:
+                    # 確保數字正確
+                    df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
+                    df["自訂價格"] = pd.to_numeric(df.get("自訂價格", 0), errors='coerce').fillna(0)
+                    df["參考市價"] = pd.to_numeric(df.get("參考市價", 0), errors='coerce').fillna(0)
+                    
                     for _, r in df.iterrows():
-                        p = float(r.get("自訂價格",0) or 0)
-                        if p<=0: p = float(r.get("參考市價",0) or 0)
-                        v = p * float(r.get("股數",0) or 0) * rate
+                        p = float(r.get("自訂價格",0))
+                        if p<=0: p = float(r.get("參考市價",0))
+                        v = p * float(r.get("股數",0)) * rate
                         vals.append(v)
                     df["總值(TWD)"] = vals
                     total_cat_val = sum(vals)
@@ -435,7 +490,6 @@ def main_app():
                     v_col = pd.to_numeric(df["金額"], errors='coerce').fillna(0)
                     total_cat_val = v_col.sum()
 
-                # 2. 顯示總金額 (使用自訂 CSS 樣式)
                 num_class = "cat-val-num-red" if is_liability else "cat-val-num"
                 val_str = "****" if privacy_mode else f"${total_cat_val:,.0f}"
                 
@@ -446,7 +500,6 @@ def main_app():
                     </div>
                 """, unsafe_allow_html=True)
 
-                # 3. Data Editor 設定 (fixed)
                 cfg = {}
                 if privacy_mode:
                     df.loc[:] = "****"
@@ -456,16 +509,14 @@ def main_app():
                 
                 edited = st.data_editor(
                     df, 
-                    num_rows="fixed", # 防止誤觸
+                    num_rows="fixed",
                     key=f"e_{key}", 
                     column_config=cfg,
                     use_container_width=True
                 )
 
-                # 4. 新增按鈕
                 if st.button(f"➕ 新增一筆", key=f"add_{key}"):
                     new_row = {c: "" for c in cols}
-                    # 預設值
                     if "類別" in cols: 
                         if "us" in key: new_row["類別"] = "美股"
                         elif "tw" in key: new_row["類別"] = "台股"
@@ -480,18 +531,15 @@ def main_app():
 
                 if not privacy_mode:
                     save_cols = [c for c in edited.columns if c != "總值(TWD)"]
-                    st.session_state[key] = edited[save_cols].to_dict('records')
+                    # 存檔時先過濾空值
+                    cleaned_data = edited[save_cols].copy()
+                    st.session_state[key] = cleaned_data.to_dict('records')
 
         c1, c2 = st.columns(2)
-        # 美股/加密
         with c1: show_editor("🇺🇸 美股/虛擬貨幣 (US Stocks & Crypto)", "us_data", ["代號","股數","參考市價"], EXCHANGE_RATE)
-        # 台股
         with c2: show_editor("🇹🇼 台股 (TW Stocks)", "tw_data", ["代號","股數","參考市價"], 1.0)
-        
         c3, c4 = st.columns(2)
-        # 固定資產
         with c3: show_editor("🏠 固定資產", "fixed_data", ["資產項目","現值"])
-        # 負債 (傳入 is_liability=True)
         with c4: show_editor("💳 負債", "liab_data", ["負債項目","金額"], is_liability=True)
 
     with tab_fire:
@@ -553,7 +601,7 @@ def main_app():
                     use_container_width=True, 
                     hide_index=True,
                     column_config={
-                        "資產": st.column_config.TextColumn("資產代號", width="small"), # 標題也改短一點
+                        "資產": st.column_config.TextColumn("資產代號", width="small"),
                         "類別": st.column_config.TextColumn("類別", width="small"),
                         "價值": st.column_config.NumberColumn("總價值 (TWD)", format="$%d"),
                         "佔比 (%)": st.column_config.ProgressColumn(
