@@ -9,6 +9,7 @@ from datetime import date
 from streamlit import runtime
 import os
 import sys
+import re # 新增：用於強力修復金鑰格式
 
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
@@ -43,21 +44,36 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端資料庫核心 (Google Sheets) - 含自動修復機制 ---
+# --- 2. 雲端資料庫核心 (Google Sheets) - 終極修復版 ---
 
 ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
 def get_google_client():
-    """連線到 Google，包含 Private Key 自動修復機制"""
+    """連線到 Google，包含終極 Key 修復機制"""
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     
     # 讀取 Secrets
     creds_dict = dict(st.secrets["gcp_service_account"])
     
-    # 【關鍵修復】: 強制替換換行符號，解決 Invalid JWT Signature 問題
+    # 【終極修復】: 無論 Key 貼成什麼樣，都強制修復成正確格式
     if "private_key" in creds_dict:
-        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        key = creds_dict["private_key"]
+        # 1. 處理標準的 \\n 轉 \n
+        key = key.replace("\\n", "\n")
+        # 2. 處理如果頭尾有引號
+        key = key.strip('"').strip("'")
+        
+        # 3. 如果 Key 看起來沒有正確換行 (黏在一起)，嘗試強制分割
+        if "-----BEGIN PRIVATE KEY-----" in key and "\n" not in key:
+            # 這情況很少見，但以防萬一
+            key = key.replace(" PRIVATE KEY-----", " PRIVATE KEY-----\n")
+            key = key.replace("-----END", "\n-----END")
+            key = key.replace(" ", "\n") # 這是最後手段，如果連內容都被空白取代
+            # 修正頭尾因為上面替換可能爛掉的地方
+            key = key.replace("-----\nBEGIN", "-----BEGIN").replace("KEY-----\n", "KEY-----\n")
+        
+        creds_dict["private_key"] = key
         
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
@@ -76,7 +92,10 @@ def check_login(username, password):
                 return str(user.get('Target_Sheet'))
         return None
     except Exception as e:
-        st.error(f"登入驗證失敗 (可能是 Google Sheet 權限問題或帳密錯誤): {e}")
+        # 詳細顯示錯誤，幫助除錯
+        st.error(f"登入失敗: {str(e)}")
+        if "invalid_grant" in str(e):
+             st.warning("⚠️ 錯誤原因：Google 拒絕連線。這通常是 Secrets 裡的 private_key 格式跑掉了。")
         return None
 
 def init_user_sheet(target_sheet_name):
