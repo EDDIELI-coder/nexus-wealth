@@ -55,11 +55,13 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端資料庫核心 ---
+# --- 2. 雲端資料庫核心 (效能優化版) ---
 
 ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
+# 【關鍵優化】加入快取 (Cache)，避免每次動作都重新連線 Google，大幅提升速度並減少錯誤
+@st.cache_resource(ttl=600) # 快取 10 分鐘
 def get_google_client():
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
@@ -68,7 +70,7 @@ def get_google_client():
     try:
         if "gcp_service_account" not in st.secrets:
             st.error("❌ 找不到 Secrets 設定。")
-            st.stop()
+            return None
 
         creds_dict = dict(st.secrets["gcp_service_account"])
         if "private_key" in creds_dict:
@@ -80,11 +82,12 @@ def get_google_client():
         return gspread.authorize(creds)
     except Exception as e:
         st.error(f"🔥 連線錯誤: {e}")
-        st.stop()
+        return None
 
 def check_login(username, password):
     try:
         client = get_google_client()
+        if not client: return None
         sh = client.open(ADMIN_DB_NAME)
         ws = sh.worksheet("Users")
         users_data = ws.get_all_records()
@@ -97,6 +100,7 @@ def check_login(username, password):
 
 def init_user_sheet(target_sheet_name):
     client = get_google_client()
+    if not client: return None
     try:
         sh = client.open(target_sheet_name)
     except:
@@ -125,6 +129,8 @@ def init_user_sheet(target_sheet_name):
 def load_data_from_cloud(target_sheet):
     try:
         sh = init_user_sheet(target_sheet)
+        if not sh: return
+
         def read_ws(title, cols):
             try:
                 data = sh.worksheet(title).get_all_records()
@@ -151,6 +157,8 @@ def load_data_from_cloud(target_sheet):
 def save_data_to_cloud(target_sheet):
     try:
         sh = init_user_sheet(target_sheet)
+        if not sh: return
+
         def write_ws(title, df):
             try:
                 ws = sh.worksheet(title)
@@ -201,6 +209,7 @@ def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthl
     today = str(date.today())
     try:
         sh = init_user_sheet(target_sheet)
+        if not sh: return
         ws = sh.worksheet("History")
         try:
             records = ws.get_all_records()
@@ -210,57 +219,18 @@ def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthl
         ws.append_row([today, net_worth, assets, liabilities, monthly_payment])
     except: pass
 
-# --- 【核心更新】智慧型股價/代號解析器 ---
-def fetch_smart_ticker_data(symbol):
-    """
-    智慧抓取股價與資訊，支援:
-    1. 美股代號自動大寫 (vti -> VTI)
-    2. 台股代號自動加 .TW 或 .TWO (0050 -> 0050.TW)
-    3. 虛擬貨幣自動加 -USD (BTC -> BTC-USD)
-    回傳: (price, valid_symbol, name)
-    """
-    symbol = str(symbol).strip().upper() # 強制轉大寫
-    
-    # 1. 嘗試直接抓取 (針對標準美股)
-    t = yf.Ticker(symbol)
+def get_precise_price(ticker):
     try:
-        hist = t.history(period="1d")
-        if not hist.empty:
-            return hist['Close'].iloc[-1], symbol, t.info.get('shortName', symbol)
-    except: pass
-
-    # 2. 台股防呆 (純數字 -> 加上 .TW)
-    if symbol.isdigit():
-        # 嘗試上市
-        try_sym = f"{symbol}.TW"
-        t = yf.Ticker(try_sym)
-        try:
-            hist = t.history(period="1d")
-            if not hist.empty:
-                return hist['Close'].iloc[-1], try_sym, t.info.get('shortName', try_sym)
-        except: pass
-        
-        # 嘗試上櫃 (櫃買中心)
-        try_sym = f"{symbol}.TWO"
-        t = yf.Ticker(try_sym)
-        try:
-            hist = t.history(period="1d")
-            if not hist.empty:
-                return hist['Close'].iloc[-1], try_sym, t.info.get('shortName', try_sym)
-        except: pass
-
-    # 3. 虛擬貨幣防呆 (常見幣種自動加 -USD)
-    # 如果代號是 3~5 個字母，且第一次抓不到，嘗試加 -USD
-    if len(symbol) <= 5 and symbol.isalpha():
-        try_sym = f"{symbol}-USD"
-        t = yf.Ticker(try_sym)
-        try:
-            hist = t.history(period="1d")
-            if not hist.empty:
-                return hist['Close'].iloc[-1], try_sym, t.info.get('shortName', try_sym)
-        except: pass
-        
-    return 0.0, symbol, ""
+        if not ticker: return 0
+        stock = yf.Ticker(str(ticker).strip())
+        price = 0.0
+        if hasattr(stock, 'fast_info'): price = stock.fast_info.get('last_price', 0.0)
+        if price == 0: price = stock.info.get('regularMarketPrice', 0.0)
+        if price == 0:
+            hist = stock.history(period="1d")
+            if not hist.empty: price = hist['Close'].iloc[-1]
+        return float(price)
+    except: return 0.0
 
 def update_portfolio_data(df, category_default):
     df = pd.DataFrame(df)
@@ -269,29 +239,19 @@ def update_portfolio_data(df, category_default):
     if "股數" in df.columns:
         df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
     
-    with st.status(f"🚀 更新 {category_default} (含自動修正)...", expanded=True) as status:
+    with st.status(f"🚀 更新 {category_default}...", expanded=True) as status:
         for index, row in df.iterrows():
-            ticker = str(row.get("代號", "")).strip()
-            
+            ticker = str(row.get("代號", "")).strip().upper()
             if not ticker or ticker == "NAN" or ticker == "NONE": continue
+            status.update(label=f"下載: {ticker}...", state="running")
+            price = get_precise_price(ticker)
+            if price > 0: df.at[index, "參考市價"] = price
             
-            status.update(label=f"下載/修正: {ticker}...", state="running")
-            
-            # 使用智慧解析器
-            price, valid_symbol, name = fetch_smart_ticker_data(ticker)
-            
-            if price > 0:
-                df.at[index, "參考市價"] = price
-                # 自動修正代號 (例如把 0050 改成 0050.TW，方便下次使用)
-                if valid_symbol != ticker:
-                     df.at[index, "代號"] = valid_symbol
-                # 自動補全名稱 (如果原本是空的)
-                if pd.isna(row.get("名稱")) or str(row.get("名稱")).strip() == "":
-                    df.at[index, "名稱"] = name
-            
+            if pd.isna(row.get("名稱")) or str(row.get("名稱")) == "":
+                try: df.at[index, "名稱"] = yf.Ticker(ticker).info.get('shortName', ticker)
+                except: pass
             if pd.isna(row.get("類別")) or str(row.get("類別")) == "":
                 df.at[index, "類別"] = category_default
-                
         status.update(label="✅ 完成", state="complete", expanded=False)
     return df
 
@@ -416,7 +376,6 @@ def main_app():
     st.title(f"🌌 NEXUS: {st.session_state.current_user}'s Command")
     if 'fire_states' not in st.session_state: st.session_state.fire_states = {"Lean": True, "Barista": True, "Regular": True, "Fat": True}
     
-    # 確保欄位存在
     def ensure_cols(df, cols):
         if df.empty: return pd.DataFrame(columns=cols)
         for c in cols:
@@ -590,21 +549,27 @@ def main_app():
                     use_container_width=True
                 )
 
-                col_add, col_gap = st.columns([1, 5])
-                with col_add:
-                    if st.button(f"➕ 新增一筆", key=f"add_{key}"):
-                        new_row = {c: "" for c in cols}
-                        if "類別" in cols: 
-                            if "us" in key: new_row["類別"] = "美股"
-                            elif "tw" in key: new_row["類別"] = "台股"
-                            elif "fixed" in key: new_row["類別"] = "固定"
+                # 【關鍵優化】批次新增
+                col_n, col_btn = st.columns([1, 2])
+                rows_to_add = col_n.number_input("行數", min_value=1, max_value=20, value=1, key=f"num_{key}", label_visibility="collapsed")
+                
+                if col_btn.button(f"➕ 新增 {rows_to_add} 筆", key=f"add_{key}"):
+                    new_row = {c: "" for c in cols}
+                    if "類別" in cols: 
+                        if "us" in key: new_row["類別"] = "美股"
+                        elif "tw" in key: new_row["類別"] = "台股"
+                        elif "fixed" in key: new_row["類別"] = "固定"
+                    
+                    current_data = st.session_state[key]
+                    if isinstance(current_data, pd.DataFrame):
+                        current_data = current_data.to_dict('records')
+                    
+                    # 批次追加
+                    for _ in range(rows_to_add):
+                        current_data.append(new_row.copy())
                         
-                        current_data = st.session_state[key]
-                        if isinstance(current_data, pd.DataFrame):
-                            current_data = current_data.to_dict('records')
-                        current_data.append(new_row)
-                        st.session_state[key] = current_data
-                        st.rerun()
+                    st.session_state[key] = current_data
+                    st.rerun()
 
                 if not privacy_mode:
                     if edited["❌"].any():
