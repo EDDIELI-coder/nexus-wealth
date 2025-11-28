@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import gspread
-from google.oauth2.service_account import Credentials # 改用 Google 官方新版驗證套件
+from google.oauth2.service_account import Credentials # Google 官方新版驗證
 from datetime import date
 from streamlit import runtime
 import os
@@ -23,8 +23,6 @@ st.markdown("""
         line-height: 1.6 !important;
         letter-spacing: 0.5px;
     }
-    .stSelectbox div[data-baseweb="select"] > div { min-height: 45px; }
-    .streamlit-expanderHeader { font-weight: 700 !important; font-size: 16px !important; }
     .nexus-card {
         background-color: #1a1a1a; border: 1px solid #333; border-radius: 10px;
         padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
@@ -44,44 +42,36 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端資料庫核心 (改用 google-auth) ---
+# --- 2. 雲端資料庫核心 (Google Auth Engine) ---
 
 ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
 def get_google_client():
-    """使用 google-auth 連線，解決舊版套件相容性問題"""
-    # 定義權限範圍
+    """使用 google-auth 連線，容錯率最高"""
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
     ]
     
     try:
-        creds_dict = {}
-        # 這裡會讀取 Streamlit Secrets
-        # 我們支援兩種格式：舊的 gcp_service_account 和新的 gcp_json
-        
-        if "gcp_json" in st.secrets and "text_content" in st.secrets["gcp_json"]:
-            # 如果你有用核彈級 JSON 方法
-            json_str = st.secrets["gcp_json"]["text_content"]
-            creds_dict = json.loads(json_str)
-        elif "gcp_service_account" in st.secrets:
-            # 如果你是用標準貼法
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            # 自動修復私鑰格式 (補回換行)
-            if "private_key" in creds_dict:
-                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-        else:
+        # 直接讀取 TOML 格式的 Secrets
+        if "gcp_service_account" not in st.secrets:
             st.error("❌ 找不到 Secrets 設定，請檢查 Streamlit 後台。")
             st.stop()
 
-        # 使用新版驗證方式 (這行是關鍵！)
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        
+        # 自動修復私鑰格式 (補回換行符號)
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+
+        # 建立連線
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
         
     except Exception as e:
-        st.error(f"🔥 連線發生錯誤 (請檢查 Secrets): {e}")
+        st.error(f"🔥 連線發生錯誤: {e}")
         st.stop()
 
 def check_login(username, password):
@@ -97,9 +87,9 @@ def check_login(username, password):
                 return str(user.get('Target_Sheet'))
         return None
     except Exception as e:
-        st.error(f"登入驗證失敗: {e}")
+        st.error(f"登入失敗: {e}")
         if "SpreadsheetNotFound" in str(e):
-             st.warning(f"⚠️ 找不到名為 '{ADMIN_DB_NAME}' 的試算表，請確認您已建立該檔案並分享給機器人。")
+             st.warning(f"⚠️ 找不到 '{ADMIN_DB_NAME}' 試算表，請確認已建立並分享給機器人。")
         return None
 
 def init_user_sheet(target_sheet_name):
@@ -107,9 +97,10 @@ def init_user_sheet(target_sheet_name):
     try:
         sh = client.open(target_sheet_name)
     except gspread.SpreadsheetNotFound:
-        st.error(f"❌ 找不到試算表：{target_sheet_name}。請確認已建立並分享給機器人 Email。")
+        st.error(f"❌ 找不到試算表：{target_sheet_name}。")
         st.stop()
     
+    # 自動建立必要分頁
     required = {
         "US_Stocks": ["代號", "名稱", "股數", "類別", "自訂價格", "參考市價"],
         "TW_Stocks": ["代號", "名稱", "股數", "類別", "自訂價格", "參考市價"],
@@ -128,7 +119,7 @@ def init_user_sheet(target_sheet_name):
     except: pass
     return sh
 
-# --- 3. 資料讀寫邏輯 ---
+# --- 3. 資料邏輯 ---
 
 def load_data_from_cloud(target_sheet):
     try:
@@ -154,7 +145,7 @@ def load_data_from_cloud(target_sheet):
         st.session_state.saved_return = float(settings.get("return_rate", 11.0))
         st.session_state.data_loaded = True
     except Exception as e:
-        st.error(f"雲端資料讀取失敗: {e}")
+        st.error(f"資料讀取錯誤: {e}")
 
 def save_data_to_cloud(target_sheet):
     try:
@@ -182,7 +173,7 @@ def save_data_to_cloud(target_sheet):
             {"Key": "return_rate", "Value": st.session_state.saved_return}
         ])
         write_ws("Settings", settings_data)
-        st.toast("✅ 雲端同步完成！", icon="☁️")
+        st.toast("✅ 同步成功！", icon="☁️")
     except Exception as e:
         st.error(f"存檔失敗: {e}")
 
@@ -200,8 +191,6 @@ def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthl
         ws.append_row([today, net_worth, assets, liabilities, monthly_payment])
     except: pass
 
-# --- 4. 輔助函式 ---
-
 def get_precise_price(ticker):
     try:
         if not ticker: return 0
@@ -218,20 +207,19 @@ def get_precise_price(ticker):
 def update_portfolio_data(df, category_default):
     if df.empty: return df
     df = pd.DataFrame(df)
-    with st.status(f"🚀 **更新 {category_default} 價格中...**", expanded=True) as status:
+    with st.status(f"🚀 更新 {category_default}...", expanded=True) as status:
         for index, row in df.iterrows():
             ticker = str(row.get("代號", "")).strip().upper()
             if not ticker or ticker == "NAN": continue
             status.update(label=f"下載: {ticker}...", state="running")
             price = get_precise_price(ticker)
             if price > 0: df.at[index, "參考市價"] = price
-            
             if pd.isna(row.get("名稱")) or str(row.get("名稱")) == "":
                 try: df.at[index, "名稱"] = yf.Ticker(ticker).info.get('shortName', ticker)
                 except: pass
             if pd.isna(row.get("類別")) or str(row.get("類別")) == "":
                 df.at[index, "類別"] = category_default
-        status.update(label="✅ 更新完成", state="complete", expanded=False)
+        status.update(label="✅ 完成", state="complete", expanded=False)
     return df
 
 def parse_file(uploaded_file, import_type):
@@ -250,12 +238,9 @@ def parse_file(uploaded_file, import_type):
             ticker_col = next((c for c in df.columns if c in ['ticker', 'symbol', '代號', '股票代號']), None)
             shares_col = next((c for c in df.columns if c in ['shares', 'quantity', '股數', '數量', 'qty']), None)
             price_col = next((c for c in df.columns if c in ['price', 'cost', '自訂價格', '成本']), None)
-            
             if not ticker_col or not shares_col: return None, "缺少 [代號] 或 [股數]"
-            
             df[ticker_col] = df[ticker_col].astype(str).str.strip().str.upper()
             df[shares_col] = pd.to_numeric(df[shares_col], errors='coerce').fillna(0)
-            
             for _, row in df.iterrows():
                 new_data.append({
                     "代號": row[ticker_col], "名稱": "", 
@@ -285,13 +270,11 @@ def calculate_fire_curves_advanced(current_age, investable_assets, house_value, 
     curr_invest = investable_assets
     curr_house = house_value
     wealth_curve = [curr_invest + curr_house]
-    
     levels = {"Lean": 600000, "Barista": 800000, "Regular": 1000000, "Fat": 2500000}
     level_curves = {k: [v * 25] for k, v in levels.items()}
     custom_target = [custom_expense * 25]
     curr_levels = {k: v * 25 for k, v in levels.items()}
     curr_custom = custom_expense * 25
-    
     for _ in range(len(ages) - 1):
         curr_invest = (curr_invest + savings) * (1 + invest_return/100)
         if include_house_growth and curr_house > 0: curr_house = curr_house * (1 + house_growth/100)
@@ -307,7 +290,7 @@ def predict_portfolio_return_detail(df_assets, include_house):
     if df_assets.empty: return 5.0, "無資產"
     returns_map = {"美股": 10.0, "台股": 8.0, "虛擬貨幣": 25.0, "現金": 1.0, "房產": 3.0, "固定資產": 3.0}
     df_calc = df_assets.copy()
-    msg_prefix = "⚠️ **AI 計算模式：含房產 (以 3% 增值率平均)**" if include_house else "✅ **AI 計算模式：排除房產 (僅計算流動資產)**"
+    msg_prefix = "⚠️ **AI 計算模式：含房產**" if include_house else "✅ **AI 計算模式：排除房產**"
     if not include_house:
         df_calc = df_calc[~df_calc['類別'].str.contains('房產|固定|地產', na=False)]
     total_val = df_calc["價值"].sum()
@@ -324,7 +307,6 @@ def predict_portfolio_return_detail(df_assets, include_house):
         explanation.append(f"• **{cat}**: 佔比 {weight*100:.1f}% x 預期 {r}%")
     return round(weighted_return, 2), "\n".join(explanation)
 
-# --- 5. 登入頁面 ---
 def login_page():
     st.markdown("<br><br><br>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1, 2, 1])
@@ -334,7 +316,6 @@ def login_page():
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Access System 🚀")
-            
             if submitted:
                 target_sheet = check_login(username, password)
                 if target_sheet:
@@ -346,7 +327,6 @@ def login_page():
                 else:
                     st.error("Access Denied. Invalid credentials.")
 
-# --- 6. 主應用程式 (UI) ---
 def main_app():
     with st.sidebar:
         st.info(f"👤 User: **{st.session_state.current_user}**")
