@@ -187,11 +187,11 @@ def save_data_to_cloud(target_sheet, silent=False):
                     if c in df_clean.columns:
                         df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
-                # 嚴格過濾無效行
+                # 嚴格過濾無效行 (【修正】使用 .str.lower() 避免 Series 錯誤)
                 if "代號" in df_clean.columns:
                     df_clean = df_clean[
                         (df_clean["代號"].astype(str).str.strip() != "") & 
-                        (df_clean["代號"].astype(str).str.strip().lower() != "nan")
+                        (df_clean["代號"].astype(str).str.strip().str.lower() != "nan")
                     ]
                 elif "資產項目" in df_clean.columns:
                     df_clean = df_clean[df_clean["資產項目"].astype(str).str.strip() != ""]
@@ -458,7 +458,6 @@ def main_app():
     st.title(f"🌌 NEXUS: {st.session_state.current_user}'s Command")
     if 'fire_states' not in st.session_state: st.session_state.fire_states = {"Lean": True, "Barista": True, "Regular": True, "Fat": True}
     
-    # 確保欄位存在
     def ensure_cols(df, cols):
         if df.empty: return pd.DataFrame(columns=cols)
         for c in cols:
