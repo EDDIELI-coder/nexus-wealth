@@ -48,22 +48,22 @@ ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
 def get_google_client():
-    """連線到 Google"""
+    """最基礎的連線方式"""
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
     ]
     
     try:
+        # 直接讀取 Secrets
         if "gcp_service_account" not in st.secrets:
             st.error("❌ 找不到 Secrets 設定，請檢查 Streamlit 後台。")
             st.stop()
 
+        # 將 Secrets 轉為字典
         creds_dict = dict(st.secrets["gcp_service_account"])
         
-        # 這裡不需要再做任何 replace，因為 Secrets 已經是完美的多行字串格式
-        # google-auth 會直接讀取它
-        
+        # 建立連線
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
         
