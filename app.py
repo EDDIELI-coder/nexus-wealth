@@ -48,32 +48,24 @@ ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
 def get_google_client():
-    """連線到 Google"""
+    """連線到 Google (支援 JSON 字串直接讀取)"""
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
     ]
     
     try:
-        # 檢查 Secrets 是否存在
-        if "gcp_service_account" not in st.secrets:
-            st.error("❌ 找不到 Secrets 設定，請檢查 Streamlit 後台。")
+        # 優先嘗試讀取 JSON 字串格式
+        if "gcp_json" in st.secrets and "text_content" in st.secrets["gcp_json"]:
+            json_str = st.secrets["gcp_json"]["text_content"]
+            creds_dict = json.loads(json_str)
+            # JSON 裡的 \n 不需要額外處理，json.loads 會自己搞定
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            return gspread.authorize(creds)
+            
+        else:
+            st.error("❌ 找不到 Secrets 設定！請確認已在 Secrets 貼上 [gcp_json] 區塊。")
             st.stop()
-
-        # 讀取 Secrets
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        
-        # 【關鍵修復】處理私鑰格式
-        # 你的 JSON 檔案裡私鑰是單行且包含 \n 字串，這裡必須將其轉回真正的換行符號
-        if "private_key" in creds_dict:
-            key = creds_dict["private_key"]
-            if "\\n" in key:
-                key = key.replace("\\n", "\n")
-            creds_dict["private_key"] = key
-
-        # 建立連線
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        return gspread.authorize(creds)
         
     except Exception as e:
         st.error(f"🔥 連線發生錯誤: {e}")
@@ -87,7 +79,6 @@ def check_login(username, password):
         users_data = ws.get_all_records()
         
         for user in users_data:
-            # 寬鬆比對 (移除前後空白)
             if str(user.get('Username')).strip() == str(username).strip() and \
                str(user.get('Password')).strip() == str(password).strip():
                 return str(user.get('Target_Sheet'))
