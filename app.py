@@ -10,6 +10,7 @@ from streamlit import runtime
 import os
 import sys
 import json
+import time
 
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
@@ -153,7 +154,7 @@ def load_data_from_cloud(target_sheet):
         st.session_state.data_loaded = True
     except Exception as e: st.error(f"資料讀取錯誤: {e}")
 
-def save_data_to_cloud(target_sheet):
+def save_data_to_cloud(target_sheet, silent=False):
     try:
         sh = init_user_sheet(target_sheet)
         if not sh: return
@@ -200,7 +201,9 @@ def save_data_to_cloud(target_sheet):
             {"Key": "return_rate", "Value": st.session_state.saved_return}
         ])
         write_ws("Settings", settings_data)
-        st.toast("✅ 雲端同步完成", icon="☁️")
+        
+        if not silent:
+            st.toast("✅ 雲端同步完成", icon="☁️")
         
     except Exception as e: st.error(f"存檔失敗: {e}")
 
@@ -220,13 +223,8 @@ def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthl
 
 # --- 【核心功能】智慧型股價與代號修正 ---
 def fetch_smart_ticker_data(symbol):
-    """
-    智慧解析: 輸入 'vti' -> 回傳 'VTI', price, name
-    輸入 '0050' -> 回傳 '0050.TW', price, name
-    """
     symbol = str(symbol).strip().upper()
     
-    # 1. 嘗試直接抓取 (針對標準美股)
     t = yf.Ticker(symbol)
     try:
         hist = t.history(period="1d")
@@ -234,7 +232,6 @@ def fetch_smart_ticker_data(symbol):
             return hist['Close'].iloc[-1], symbol, t.info.get('shortName', symbol)
     except: pass
 
-    # 2. 台股防呆 (0050 -> 0050.TW)
     if symbol.isdigit():
         try_sym = f"{symbol}.TW"
         t = yf.Ticker(try_sym)
@@ -244,7 +241,7 @@ def fetch_smart_ticker_data(symbol):
                 return hist['Close'].iloc[-1], try_sym, t.info.get('shortName', try_sym)
         except: pass
         
-        try_sym = f"{symbol}.TWO" # 上櫃
+        try_sym = f"{symbol}.TWO"
         t = yf.Ticker(try_sym)
         try:
             hist = t.history(period="1d")
@@ -252,7 +249,6 @@ def fetch_smart_ticker_data(symbol):
                 return hist['Close'].iloc[-1], try_sym, t.info.get('shortName', try_sym)
         except: pass
 
-    # 3. 虛擬貨幣防呆 (BTC -> BTC-USD)
     if len(symbol) <= 5 and symbol.isalpha():
         try_sym = f"{symbol}-USD"
         t = yf.Ticker(try_sym)
@@ -271,7 +267,7 @@ def update_portfolio_data(df, category_default):
     if "股數" in df.columns:
         df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
     
-    # 顯示進度條，提升體驗
+    # 顯示進度條
     progress_text = "正在連線更新股價..."
     my_bar = st.progress(0, text=progress_text)
     total_rows = len(df)
@@ -279,27 +275,23 @@ def update_portfolio_data(df, category_default):
     for index, row in df.iterrows():
         ticker = str(row.get("代號", "")).strip()
         
-        # 更新進度
         my_bar.progress((index + 1) / total_rows, text=f"正在更新: {ticker}")
         
         if not ticker or ticker == "nan": continue
         
-        # 呼叫智慧解析
         price, valid_symbol, name = fetch_smart_ticker_data(ticker)
         
         if price > 0:
             df.at[index, "參考市價"] = price
-            # 自動修正代號回寫表格
             if valid_symbol != ticker:
                  df.at[index, "代號"] = valid_symbol
-            # 自動補全名稱
             if pd.isna(row.get("名稱")) or str(row.get("名稱")).strip() == "":
                 df.at[index, "名稱"] = name
         
         if pd.isna(row.get("類別")) or str(row.get("類別")) == "":
             df.at[index, "類別"] = category_default
             
-    my_bar.empty() # 清除進度條
+    my_bar.empty()
     st.toast(f"✅ {category_default} 更新完成！")
     return df
 
@@ -366,15 +358,21 @@ def login_page():
 def main_app():
     with st.sidebar:
         st.info(f"👤 User: **{st.session_state.current_user}**")
-        privacy_mode = st.toggle("👁️ **隱私模式**", value=False)
+        
+        # 【新增】自動同步開關
+        auto_sync = st.toggle("☁️ 自動同步 (Auto-Sync)", value=False, help="開啟後，每次編輯都會自動上傳雲端 (會稍微變慢)")
+        
         st.divider()
-        if st.button("☁️ **同步存檔**", type="primary"): save_data_to_cloud(st.session_state.target_sheet)
+        if st.button("☁️ **手動同步存檔**", type="primary"): save_data_to_cloud(st.session_state.target_sheet)
         st.divider()
         if st.button("🚪 登出系統"):
             st.session_state.clear()
             st.rerun()
 
     def fmt_money(val): return "****" if privacy_mode else f"${val:,.0f}"
+    
+    # 預設隱私模式
+    privacy_mode = False
 
     if not st.session_state.get('data_loaded'):
         with st.spinner("正在從雲端載入您的資產數據..."):
@@ -396,7 +394,6 @@ def main_app():
     df_liab = ensure_cols(pd.DataFrame(st.session_state.liab_data), ["負債項目", "金額", "每月扣款"])
 
     assets_list = []
-    # 產生報表數據 (過濾空值)
     if not df_us.empty:
         for _, row in df_us.iterrows():
             p = float(row.get("自訂價格", 0) or 0)
@@ -450,7 +447,6 @@ def main_app():
     with tab_edit:
         c_btn, _ = st.columns([1, 4])
         with c_btn:
-            # 這裡觸發智慧更新
             if st.button("⚡ **UPDATE PRICES (更新股價)**", type="primary"):
                 st.session_state.us_data = update_portfolio_data(st.session_state.us_data, "美股").to_dict('records')
                 st.session_state.tw_data = update_portfolio_data(st.session_state.tw_data, "台股").to_dict('records')
@@ -534,6 +530,7 @@ def main_app():
                 else:
                     cfg = {
                         "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
+                        # 移除 disabled=True
                         "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0),
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
@@ -558,9 +555,8 @@ def main_app():
                     use_container_width=True
                 )
 
-                # 批次新增功能
-                col_n, col_btn = st.columns([1, 2])
-                rows_to_add = col_n.number_input("行數", min_value=1, max_value=20, value=1, key=f"num_{key}", label_visibility="collapsed")
+                col_add, col_btn = st.columns([1, 2])
+                rows_to_add = col_add.number_input("行數", min_value=1, max_value=20, value=1, key=f"num_{key}", label_visibility="collapsed")
                 
                 if col_btn.button(f"➕ 新增 {rows_to_add} 筆", key=f"add_{key}"):
                     new_row = {c: "" for c in cols}
@@ -584,11 +580,15 @@ def main_app():
                         edited = edited[~edited["❌"]]
                         cols_to_save = [c for c in edited.columns if c not in ["總價值(TWD)", "佔比 (%)", "❌"]]
                         st.session_state[key] = edited[cols_to_save].to_dict('records')
+                        # 自動同步邏輯：如果開啟了自動同步，則刪除後立即存檔
+                        if auto_sync: save_data_to_cloud(st.session_state.target_sheet, silent=True)
                         st.toast("已刪除項目")
                         st.rerun()
                     else:
                         cols_to_save = [c for c in edited.columns if c not in ["總價值(TWD)", "佔比 (%)", "❌"]]
                         st.session_state[key] = edited[cols_to_save].to_dict('records')
+                        # 自動同步邏輯：資料變更後立即存檔
+                        if auto_sync: save_data_to_cloud(st.session_state.target_sheet, silent=True)
 
         c1, c2 = st.columns(2)
         with c1: show_editor("🇺🇸 美股/虛擬貨幣 (US Stocks & Crypto)", "us_data", ["代號","名稱","股數","類別","自訂價格","參考市價"], EXCHANGE_RATE)
@@ -639,7 +639,8 @@ def main_app():
             with c_v1:
                 st.subheader("資產分佈")
                 fig = px.sunburst(df_assets, path=['類別', '資產'], values='價值', color='類別')
-                fig.update_traces(textinfo="label+percent root", insidetextorientation='horizontal')
+                # 【關鍵修正】讓點擊區塊後佔比變 100%
+                fig.update_traces(textinfo="label+percent entry", insidetextorientation='horizontal')
                 fig.update_layout(
                     template="plotly_dark",
                     margin=dict(t=20, l=20, r=20, b=20)
