@@ -129,8 +129,9 @@ def load_data_from_cloud(target_sheet):
             try:
                 data = sh.worksheet(title).get_all_records()
                 df = pd.DataFrame(data)
+                # 確保欄位存在
                 for c in cols:
-                    if c not in df.columns: df[c] = "" # 確保欄位存在
+                    if c not in df.columns: df[c] = ""
                 return df
             except: return pd.DataFrame(columns=cols)
 
@@ -157,13 +158,12 @@ def save_data_to_cloud(target_sheet):
                 ws.clear()
                 
                 df_clean = df.copy()
-                # 確保數字欄位正確
                 num_cols = ["股數", "現值", "金額", "自訂價格", "參考市價", "每月扣款"]
                 for c in num_cols:
                     if c in df_clean.columns:
                         df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
-                # 自動清理邏輯
+                # 自動清理
                 if "代號" in df_clean.columns:
                     df_clean = df_clean[
                         (df_clean["代號"].astype(str).str.strip() != "") & 
@@ -369,7 +369,7 @@ def main_app():
     st.title(f"🌌 NEXUS: {st.session_state.current_user}'s Command")
     if 'fire_states' not in st.session_state: st.session_state.fire_states = {"Lean": True, "Barista": True, "Regular": True, "Fat": True}
     
-    # 【關鍵修正】確保欄位存在，防止 KeyError
+    # 【關鍵修正】確保欄位存在，防止 KeyError 並預設為空 dataframe
     def ensure_cols(df, cols):
         if df.empty: return pd.DataFrame(columns=cols)
         for c in cols:
@@ -383,36 +383,45 @@ def main_app():
     df_liab = ensure_cols(pd.DataFrame(st.session_state.liab_data), ["負債項目", "金額", "每月扣款"])
 
     assets_list = []
-    for _, row in df_us.iterrows():
-        p = float(row.get("自訂價格", 0) or 0)
-        if p <= 0: p = float(row.get("參考市價", 0) or 0)
-        v = p * float(row.get("股數", 0) or 0) * EXCHANGE_RATE
-        code = str(row.get("代號", "")).strip()
-        if code and code != "None" and v > 0:
-            disp_name = code
-            assets_list.append({"資產": disp_name, "類別": row.get("類別","美股"), "價值": v})
-        
-    for _, row in df_tw.iterrows():
-        p = float(row.get("自訂價格", 0) or 0)
-        if p <= 0: p = float(row.get("參考市價", 0) or 0)
-        v = p * float(row.get("股數", 0) or 0)
-        code = str(row.get("代號", "")).strip()
-        if code and code != "None" and v > 0:
-            disp_name = code
-            assets_list.append({"資產": disp_name, "類別": row.get("類別","台股"), "價值": v})
-        
-    for _, row in df_fixed.iterrows():
-        name = str(row.get("資產項目", "")).strip()
-        v = float(row.get("現值", 0) or 0)
-        if name and name != "None" and v > 0:
-            assets_list.append({"資產": name, "類別": row.get("類別","固定"), "價值": v})
-
-    df_assets = pd.DataFrame(assets_list)
-    total_assets = df_assets["價值"].sum() if not df_assets.empty else 0
+    # 【關鍵修正】避免空表格導致的計算錯誤
+    if not df_us.empty:
+        for _, row in df_us.iterrows():
+            p = float(row.get("自訂價格", 0) or 0)
+            if p <= 0: p = float(row.get("參考市價", 0) or 0)
+            v = p * float(row.get("股數", 0) or 0) * EXCHANGE_RATE
+            code = str(row.get("代號", "")).strip()
+            if code and code != "None" and v > 0:
+                disp_name = code
+                assets_list.append({"資產": disp_name, "類別": row.get("類別","美股"), "價值": v})
     
-    # 計算負債
-    total_liab = pd.to_numeric(df_liab["金額"], errors='coerce').fillna(0).sum()
-    total_monthly = pd.to_numeric(df_liab["每月扣款"], errors='coerce').fillna(0).sum()
+    if not df_tw.empty:
+        for _, row in df_tw.iterrows():
+            p = float(row.get("自訂價格", 0) or 0)
+            if p <= 0: p = float(row.get("參考市價", 0) or 0)
+            v = p * float(row.get("股數", 0) or 0)
+            code = str(row.get("代號", "")).strip()
+            if code and code != "None" and v > 0:
+                disp_name = code
+                assets_list.append({"資產": disp_name, "類別": row.get("類別","台股"), "價值": v})
+    
+    if not df_fixed.empty:
+        for _, row in df_fixed.iterrows():
+            name = str(row.get("資產項目", "")).strip()
+            v = float(row.get("現值", 0) or 0)
+            if name and name != "None" and v > 0:
+                assets_list.append({"資產": name, "類別": row.get("類別","固定"), "價值": v})
+
+    # 若無資產，建立空 DataFrame 避免報錯
+    df_assets = pd.DataFrame(assets_list)
+    if df_assets.empty:
+        df_assets = pd.DataFrame(columns=["資產", "類別", "價值"])
+        total_assets = 0
+    else:
+        total_assets = df_assets["價值"].sum()
+    
+    # 計算負債 (確保安全讀取)
+    total_liab = pd.to_numeric(df_liab["金額"], errors='coerce').fillna(0).sum() if not df_liab.empty else 0
+    total_monthly = pd.to_numeric(df_liab["每月扣款"], errors='coerce').fillna(0).sum() if not df_liab.empty else 0
     
     net_worth = total_assets - total_liab
 
@@ -501,7 +510,6 @@ def main_app():
                     cfg = {
                         "總值(TWD)": st.column_config.NumberColumn(format="$%d", disabled=True),
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
-                        # 設定其他欄位為文字輸入，解除鎖定
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
                         "資產項目": st.column_config.TextColumn(label="資產項目", width="medium"),
@@ -571,8 +579,14 @@ def main_app():
                 st.session_state.saved_savings = my_savings
         with c_f2:
             st.subheader("資產累積預測")
-            base_wealth = net_worth if include_house else (net_worth - df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum())
-            house_part = df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum() if include_house else 0
+            # 修正：增加空表格判斷，避免取值錯誤
+            if not df_assets.empty:
+                base_wealth = net_worth if include_house else (net_worth - df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum())
+                house_part = df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum() if include_house else 0
+            else:
+                base_wealth = 0
+                house_part = 0
+
             ages, wealth_c, fire_c, custom_c = calculate_fire_curves_advanced(
                 my_age, base_wealth - house_part, house_part, my_savings, my_return, 3.0, 3.0, my_expense, include_house
             )
