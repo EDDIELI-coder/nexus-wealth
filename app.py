@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import gspread
-from google.oauth2.service_account import Credentials # Google 官方新版驗證
+from google.oauth2.service_account import Credentials
 from datetime import date
 from streamlit import runtime
 import os
@@ -42,31 +42,33 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端資料庫核心 (Google Auth Engine) ---
+# --- 2. 雲端資料庫核心 ---
 
 ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
 def get_google_client():
-    """使用 google-auth 連線，容錯率最高"""
+    """連線到 Google"""
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
     ]
     
     try:
-        # 直接讀取 TOML 格式的 Secrets
         if "gcp_service_account" not in st.secrets:
             st.error("❌ 找不到 Secrets 設定，請檢查 Streamlit 後台。")
             st.stop()
 
         creds_dict = dict(st.secrets["gcp_service_account"])
         
-        # 自動修復私鑰格式 (補回換行符號)
+        # 關鍵修正：如果 secrets 裡已經是多行字串(real newlines)，這裡不需做 replace
+        # 如果是單行字串含 \n，則做 replace。這樣兩邊都相容。
         if "private_key" in creds_dict:
-            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            key = creds_dict["private_key"]
+            if "\\n" in key:
+                key = key.replace("\\n", "\n")
+            creds_dict["private_key"] = key
 
-        # 建立連線
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
         
@@ -100,7 +102,6 @@ def init_user_sheet(target_sheet_name):
         st.error(f"❌ 找不到試算表：{target_sheet_name}。")
         st.stop()
     
-    # 自動建立必要分頁
     required = {
         "US_Stocks": ["代號", "名稱", "股數", "類別", "自訂價格", "參考市價"],
         "TW_Stocks": ["代號", "名稱", "股數", "類別", "自訂價格", "參考市價"],
