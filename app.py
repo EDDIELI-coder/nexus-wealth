@@ -85,7 +85,6 @@ def get_google_client():
         st.stop()
 
 def get_service_email():
-    """取得機器人 Email 供使用者除錯"""
     try:
         return st.secrets["gcp_service_account"]["client_email"]
     except:
@@ -184,7 +183,6 @@ def save_data_to_cloud(target_sheet, silent=False):
                     if c in df_clean.columns:
                         df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
-                # 嚴格過濾無效行
                 if "代號" in df_clean.columns:
                     df_clean = df_clean[
                         (df_clean["代號"].astype(str).str.strip() != "") & 
@@ -201,7 +199,7 @@ def save_data_to_cloud(target_sheet, silent=False):
                 else: 
                     ws.update([df.columns.values.tolist()])
             except Exception as e:
-                print(f"Write Error {title}: {e}")
+                if not silent: st.warning(f"寫入 {title} 時遇到小問題: {e}")
 
         write_ws("US_Stocks", pd.DataFrame(st.session_state.us_data))
         write_ws("TW_Stocks", pd.DataFrame(st.session_state.tw_data))
@@ -281,31 +279,35 @@ def update_portfolio_data(df, category_default):
     if "股數" in df.columns:
         df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
     
-    progress_text = "正在連線更新股價..."
+    # 顯示進度條
+    progress_text = f"正在更新 {category_default}..."
     my_bar = st.progress(0, text=progress_text)
     total_rows = len(df)
     
     for index, row in df.iterrows():
-        ticker = str(row.get("代號", "")).strip()
-        
-        my_bar.progress((index + 1) / total_rows, text=f"正在更新: {ticker}")
-        
-        if not ticker or ticker == "nan": continue
-        
-        price, valid_symbol, name = fetch_smart_ticker_data(ticker)
-        
-        if price > 0:
-            df.at[index, "參考市價"] = price
-            if valid_symbol != ticker:
-                 df.at[index, "代號"] = valid_symbol
-            if pd.isna(row.get("名稱")) or str(row.get("名稱")).strip() == "":
-                df.at[index, "名稱"] = name
-        
-        if pd.isna(row.get("類別")) or str(row.get("類別")) == "":
-            df.at[index, "類別"] = category_default
+        try:
+            ticker = str(row.get("代號", "")).strip()
+            
+            my_bar.progress((index + 1) / total_rows, text=f"正在更新: {ticker}")
+            
+            if not ticker or ticker.lower() == "nan": continue
+            
+            price, valid_symbol, name = fetch_smart_ticker_data(ticker)
+            
+            if price > 0:
+                df.at[index, "參考市價"] = price
+                if valid_symbol != ticker:
+                     df.at[index, "代號"] = valid_symbol
+                if pd.isna(row.get("名稱")) or str(row.get("名稱")).strip() == "":
+                    df.at[index, "名稱"] = name
+            
+            if pd.isna(row.get("類別")) or str(row.get("類別")) == "":
+                df.at[index, "類別"] = category_default
+        except Exception:
+            # 如果單一股票更新失敗，跳過不報錯
+            continue
             
     my_bar.empty()
-    st.toast(f"✅ {category_default} 更新完成！")
     return df
 
 # --- 【修正】補回 parse_file 函式 ---
@@ -449,6 +451,7 @@ def main_app():
     st.title(f"🌌 NEXUS: {st.session_state.current_user}'s Command")
     if 'fire_states' not in st.session_state: st.session_state.fire_states = {"Lean": True, "Barista": True, "Regular": True, "Fat": True}
     
+    # 確保欄位存在
     def ensure_cols(df, cols):
         if df.empty: return pd.DataFrame(columns=cols)
         for c in cols:
@@ -515,9 +518,10 @@ def main_app():
     with tab_edit:
         c_btn, _ = st.columns([1, 4])
         with c_btn:
-            if st.button("⚡ **UPDATE PRICES (更新股價)**", type="primary"):
+            if st.button("⚡ **UPDATE PRICES (更新股價)**", type="primary", help="更新價格並自動存檔"):
                 st.session_state.us_data = update_portfolio_data(st.session_state.us_data, "美股").to_dict('records')
                 st.session_state.tw_data = update_portfolio_data(st.session_state.tw_data, "台股").to_dict('records')
+                # 【關鍵修正】更新完立刻存檔
                 save_data_to_cloud(st.session_state.target_sheet)
                 st.rerun()
 
@@ -596,10 +600,9 @@ def main_app():
                     cfg = {c: st.column_config.Column(disabled=True) for c in df.columns}
                     cfg["❌"] = st.column_config.CheckboxColumn(disabled=True)
                 else:
-                    # 【關鍵修復】ProgressColumn 參數修復
                     cfg = {
                         "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
-                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0),
+                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0), 
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
