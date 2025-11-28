@@ -73,6 +73,7 @@ def get_google_client():
             st.stop()
 
         creds_dict = dict(st.secrets["gcp_service_account"])
+        # 自動修復私鑰格式
         if "private_key" in creds_dict:
             key = creds_dict["private_key"]
             if "\\n" in key: key = key.replace("\\n", "\n")
@@ -85,6 +86,7 @@ def get_google_client():
         st.stop()
 
 def get_service_email():
+    """取得機器人 Email 供使用者除錯"""
     try:
         return st.secrets["gcp_service_account"]["client_email"]
     except:
@@ -160,11 +162,11 @@ def load_data_from_cloud(target_sheet):
         
         settings_df = read_ws("Settings", ["Key", "Value"])
         settings = dict(zip(settings_df['Key'], settings_df['Value'])) if not settings_df.empty else {}
+        
         st.session_state.saved_expense = float(settings.get("expense", 850000))
         st.session_state.saved_age = int(settings.get("age", 27))
         st.session_state.saved_savings = float(settings.get("savings", 325000))
         st.session_state.saved_return = float(settings.get("return_rate", 11.0))
-        # 新增：載入通膨率，預設為 3.0
         st.session_state.saved_inflation = float(settings.get("inflation_rate", 3.0))
         
         st.session_state.data_loaded = True
@@ -209,13 +211,14 @@ def save_data_to_cloud(target_sheet, silent=False):
         write_ws("Fixed_Assets", pd.DataFrame(st.session_state.fixed_data))
         write_ws("Liabilities", pd.DataFrame(st.session_state.liab_data))
         
-        # 新增：儲存通膨率
+        inf_rate = getattr(st.session_state, 'saved_inflation', 3.0)
+        
         settings_data = pd.DataFrame([
             {"Key": "expense", "Value": st.session_state.saved_expense},
             {"Key": "age", "Value": st.session_state.saved_age},
             {"Key": "savings", "Value": st.session_state.saved_savings},
             {"Key": "return_rate", "Value": st.session_state.saved_return},
-            {"Key": "inflation_rate", "Value": st.session_state.saved_inflation}
+            {"Key": "inflation_rate", "Value": inf_rate}
         ])
         write_ws("Settings", settings_data)
         
@@ -241,6 +244,7 @@ def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthl
         ws.append_row([today, net_worth, assets, liabilities, monthly_payment])
     except: pass
 
+# --- 【核心功能】智慧型股價與代號修正 ---
 def fetch_smart_ticker_data(symbol):
     symbol = str(symbol).strip().upper()
     
@@ -373,7 +377,6 @@ def parse_file(uploaded_file, import_type):
         return pd.DataFrame(new_data), None
     except Exception as e: return None, f"解析失敗: {str(e)}"
 
-# --- 7. FIRE 曲線 ---
 def calculate_fire_curves_advanced(current_age, investable_assets, house_value, savings, invest_return, house_growth, inflation, custom_expense, include_house_growth):
     ages = list(range(current_age, 66))
     curr_invest = investable_assets
@@ -388,14 +391,18 @@ def calculate_fire_curves_advanced(current_age, investable_assets, house_value, 
     curr_custom = custom_expense * 25
     
     for _ in range(len(ages) - 1):
+        # 【關鍵說明】複利計算：
+        # (目前資產 + 年投入資金) * (1 + 報酬率)
+        # 假設年投入資金在期初投入，享受完整一年的複利成長
         curr_invest = (curr_invest + savings) * (1 + invest_return/100)
+        
         if include_house_growth and curr_house > 0: curr_house = curr_house * (1 + house_growth/100)
         wealth_curve.append(curr_invest + curr_house)
         for k in curr_levels:
-            curr_levels[k] *= (1 + inflation/100) # 通膨影響
+            curr_levels[k] *= (1 + inflation/100)
             level_curves[k].append(curr_levels[k])
         
-        curr_custom *= (1 + inflation/100) # 目標隨通膨增加
+        curr_custom *= (1 + inflation/100)
         custom_target.append(curr_custom)
             
     return ages, wealth_curve, level_curves, custom_target
@@ -684,17 +691,20 @@ def main_app():
                 st.session_state.saved_return = r
                 st.info(exp)
             my_return = st.slider("年化報酬率 (%)", 0.0, 20.0, float(st.session_state.saved_return), 0.1)
-            # 新增：預期通膨率
-            my_inflation = st.slider("預期通貨膨脹率 (%)", 0.0, 10.0, float(st.session_state.saved_inflation), 0.1)
+            
+            default_inf = getattr(st.session_state, 'saved_inflation', 3.0)
+            my_inflation = st.slider("預期通貨膨脹率 (%)", 0.0, 10.0, float(default_inf), 0.1)
             
             my_expense = st.number_input("目標年支出", value=float(st.session_state.saved_expense), step=10000.0)
             my_age = st.number_input("目前年齡", value=int(st.session_state.saved_age))
-            my_savings = st.number_input("年儲蓄金額", value=float(st.session_state.saved_savings), step=10000.0)
+            # 【關鍵修正】這裡的標題改為 "年投入投資金額"
+            my_savings = st.number_input("年投入投資金額 (Annual Investment)", value=float(st.session_state.saved_savings), step=10000.0, help="此金額將每年加入本金，並以複利計算成長")
             
-            # 檢查是否變更並存檔
             if (my_return != st.session_state.saved_return or 
                 my_expense != st.session_state.saved_expense or 
-                my_inflation != st.session_state.saved_inflation):
+                my_inflation != st.session_state.saved_inflation or
+                my_savings != st.session_state.saved_savings or 
+                my_age != st.session_state.saved_age):
                 
                 st.session_state.saved_return = my_return
                 st.session_state.saved_expense = my_expense
@@ -704,7 +714,7 @@ def main_app():
                 if auto_sync: save_data_to_cloud(st.session_state.target_sheet, silent=True)
                 
         with c_f2:
-            st.subheader("資產累積預測")
+            st.subheader("資產累積預測 (複利成長)")
             if not df_assets.empty:
                 base_wealth = net_worth if include_house else (net_worth - df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum())
                 house_part = df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum() if include_house else 0
@@ -716,7 +726,7 @@ def main_app():
                 my_age, base_wealth - house_part, house_part, my_savings, my_return, 3.0, my_inflation, my_expense, include_house
             )
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=ages, y=wealth_c, name="預測資產", line=dict(color='#00F0FF', width=4)))
+            fig.add_trace(go.Scatter(x=ages, y=wealth_c, name="預測資產 (含複利)", line=dict(color='#00F0FF', width=4)))
             fig.add_trace(go.Scatter(x=ages, y=custom_c, name="FIRE 目標", line=dict(color='#FFD166', dash='dot')))
             fig.update_layout(template="plotly_dark", height=500, xaxis_title="年齡", yaxis_title="資產 (TWD)")
             st.plotly_chart(fig, use_container_width=True)
