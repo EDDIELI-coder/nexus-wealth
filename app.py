@@ -73,7 +73,6 @@ def get_google_client():
             st.stop()
 
         creds_dict = dict(st.secrets["gcp_service_account"])
-        # 自動修復私鑰格式
         if "private_key" in creds_dict:
             key = creds_dict["private_key"]
             if "\\n" in key: key = key.replace("\\n", "\n")
@@ -86,7 +85,6 @@ def get_google_client():
         st.stop()
 
 def get_service_email():
-    """取得機器人 Email 供使用者除錯"""
     try:
         return st.secrets["gcp_service_account"]["client_email"]
     except:
@@ -163,12 +161,10 @@ def load_data_from_cloud(target_sheet):
         settings_df = read_ws("Settings", ["Key", "Value"])
         settings = dict(zip(settings_df['Key'], settings_df['Value'])) if not settings_df.empty else {}
         
-        # 【關鍵修正】確保所有參數都有預設值
         st.session_state.saved_expense = float(settings.get("expense", 850000))
         st.session_state.saved_age = int(settings.get("age", 27))
         st.session_state.saved_savings = float(settings.get("savings", 325000))
         st.session_state.saved_return = float(settings.get("return_rate", 11.0))
-        # 新增：載入通膨率，預設為 3.0
         st.session_state.saved_inflation = float(settings.get("inflation_rate", 3.0))
         
         st.session_state.data_loaded = True
@@ -213,7 +209,6 @@ def save_data_to_cloud(target_sheet, silent=False):
         write_ws("Fixed_Assets", pd.DataFrame(st.session_state.fixed_data))
         write_ws("Liabilities", pd.DataFrame(st.session_state.liab_data))
         
-        # 新增：儲存通膨率
         inf_rate = getattr(st.session_state, 'saved_inflation', 3.0)
         
         settings_data = pd.DataFrame([
@@ -380,6 +375,8 @@ def parse_file(uploaded_file, import_type):
         return pd.DataFrame(new_data), None
     except Exception as e: return None, f"解析失敗: {str(e)}"
 
+# --- 快取計算 (減少崩潰) ---
+@st.cache_data
 def calculate_fire_curves_advanced(current_age, investable_assets, house_value, savings, invest_return, house_growth, inflation, custom_expense, include_house_growth):
     ages = list(range(current_age, 66))
     curr_invest = investable_assets
@@ -394,7 +391,7 @@ def calculate_fire_curves_advanced(current_age, investable_assets, house_value, 
     curr_custom = custom_expense * 25
     
     for _ in range(len(ages) - 1):
-        # 【關鍵說明】複利計算：(目前資產 + 年投入資金) * (1 + 報酬率)
+        # 複利計算
         curr_invest = (curr_invest + savings) * (1 + invest_return/100)
         
         if include_house_growth and curr_house > 0: curr_house = curr_house * (1 + house_growth/100)
@@ -618,7 +615,7 @@ def main_app():
                 else:
                     cfg = {
                         "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
-                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0),
+                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0), 
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
@@ -691,17 +688,18 @@ def main_app():
                 r, exp = predict_portfolio_return_detail(df_assets, include_house)
                 st.session_state.saved_return = r
                 st.info(exp)
+            # --- 互動式滑桿與圖表更新 (Debounced) ---
             my_return = st.slider("年化報酬率 (%)", 0.0, 20.0, float(st.session_state.saved_return), 0.1)
             
-            # 【關鍵修正】確保通膨率有預設值，且從雲端載入
             default_inf = getattr(st.session_state, 'saved_inflation', 3.0)
             my_inflation = st.slider("預期通貨膨脹率 (%)", 0.0, 10.0, float(default_inf), 0.1)
             
             my_expense = st.number_input("目標年支出", value=float(st.session_state.saved_expense), step=10000.0)
             my_age = st.number_input("目前年齡", value=int(st.session_state.saved_age))
-            # 【關鍵修正】這裡的標題改為 "年投入投資金額"
             my_savings = st.number_input("年投入投資金額 (Annual Investment)", value=float(st.session_state.saved_savings), step=10000.0, help="此金額將每年加入本金，並以複利計算成長")
             
+            # 這些變數現在只會更新 Session State 和圖表，不會觸發存檔
+            # 只有在切換頁面或手動按存檔時才會寫入 Google Sheet
             if (my_return != st.session_state.saved_return or 
                 my_expense != st.session_state.saved_expense or 
                 my_inflation != st.session_state.saved_inflation or
@@ -713,6 +711,7 @@ def main_app():
                 st.session_state.saved_age = my_age
                 st.session_state.saved_savings = my_savings
                 st.session_state.saved_inflation = my_inflation
+                
                 if auto_sync: save_data_to_cloud(st.session_state.target_sheet, silent=True)
                 
         with c_f2:
@@ -724,7 +723,6 @@ def main_app():
                 base_wealth = 0
                 house_part = 0
 
-            # 將通膨率傳入計算函式
             ages, wealth_c, fire_c, custom_c = calculate_fire_curves_advanced(
                 my_age, base_wealth - house_part, house_part, my_savings, my_return, 3.0, my_inflation, my_expense, include_house
             )
