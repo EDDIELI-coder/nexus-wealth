@@ -14,11 +14,11 @@ import json
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
 
-# CSS 樣式 (已移除強制粗體，讓版面更自然)
+# CSS 樣式 (【修正】移除 div, span，解決 Icon 變成文字的問題)
 st.markdown("""
     <style>
-    /* 全局字體設定 - 回歸標準字重，避免跑版 */
-    h1, h2, h3, h4, h5, h6, p, label, li, td, th, div, span, .stDataFrame, .stTable {
+    /* 全局字體設定 - 僅針對文字標籤，不影響系統 Icon */
+    h1, h2, h3, h4, h5, h6, p, label, li, td, th, .stDataFrame, .stTable {
         font-family: "Roboto", "Microsoft JhengHei", sans-serif !important;
         line-height: 1.6 !important;
         letter-spacing: 0.5px;
@@ -207,6 +207,7 @@ def update_portfolio_data(df, category_default):
             status.update(label=f"下載: {ticker}...", state="running")
             price = get_precise_price(ticker)
             if price > 0: df.at[index, "參考市價"] = price
+            # 依舊會嘗試抓名稱存檔，但顯示時會優先用代號
             if pd.isna(row.get("名稱")) or str(row.get("名稱")) == "":
                 try: df.at[index, "名稱"] = yf.Ticker(ticker).info.get('shortName', ticker)
                 except: pass
@@ -342,17 +343,25 @@ def main_app():
     df_liab = pd.DataFrame(st.session_state.liab_data)
 
     assets_list = []
+    # 【關鍵修正】這裡優先顯示代號，如果沒有代號才顯示名稱
     for _, row in df_us.iterrows():
         p = float(row.get("自訂價格", 0) or 0)
         if p <= 0: p = float(row.get("參考市價", 0) or 0)
         v = p * float(row.get("股數", 0) or 0) * EXCHANGE_RATE
-        assets_list.append({"資產": row.get("名稱",""), "類別": row.get("類別","美股"), "價值": v})
+        # 使用代號作為顯示名稱
+        disp_name = row.get("代號") if row.get("代號") else row.get("名稱", "美股")
+        assets_list.append({"資產": disp_name, "類別": row.get("類別","美股"), "價值": v})
+        
     for _, row in df_tw.iterrows():
         p = float(row.get("自訂價格", 0) or 0)
         if p <= 0: p = float(row.get("參考市價", 0) or 0)
         v = p * float(row.get("股數", 0) or 0)
-        assets_list.append({"資產": row.get("名稱",""), "類別": row.get("類別","台股"), "價值": v})
+        # 使用代號作為顯示名稱
+        disp_name = row.get("代號") if row.get("代號") else row.get("名稱", "台股")
+        assets_list.append({"資產": disp_name, "類別": row.get("類別","台股"), "價值": v})
+        
     for _, row in df_fixed.iterrows():
+        # 固定資產沒有代號，就用資產項目名稱
         assets_list.append({"資產": row.get("資產項目",""), "類別": row.get("類別","固定"), "價值": float(row.get("現值", 0) or 0)})
 
     df_assets = pd.DataFrame(assets_list)
@@ -461,7 +470,6 @@ def main_app():
             with c_v1:
                 st.subheader("資產分佈")
                 fig = px.sunburst(df_assets, path=['類別', '資產'], values='價值', color='類別')
-                # 加上百分比標籤並強制文字水平
                 fig.update_traces(textinfo="label+percent root", insidetextorientation='horizontal')
                 fig.update_layout(
                     template="plotly_dark",
@@ -472,7 +480,6 @@ def main_app():
                 st.subheader("持倉排行")
                 df_show = df_assets.copy()
                 total_val = df_show["價值"].sum()
-                # 計算百分比
                 df_show["佔比 (%)"] = (df_show["價值"] / total_val * 100)
                 df_show = df_show.sort_values("價值", ascending=False)
                 
@@ -485,7 +492,7 @@ def main_app():
                     use_container_width=True, 
                     hide_index=True,
                     column_config={
-                        "資產": st.column_config.TextColumn("資產名稱", width="medium"),
+                        "資產": st.column_config.TextColumn("資產代號", width="small"), # 標題也改短一點
                         "類別": st.column_config.TextColumn("類別", width="small"),
                         "價值": st.column_config.NumberColumn("總價值 (TWD)", format="$%d"),
                         "佔比 (%)": st.column_config.ProgressColumn(
