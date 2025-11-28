@@ -163,10 +163,12 @@ def load_data_from_cloud(target_sheet):
         settings_df = read_ws("Settings", ["Key", "Value"])
         settings = dict(zip(settings_df['Key'], settings_df['Value'])) if not settings_df.empty else {}
         
+        # 【關鍵修正】確保所有參數都有預設值
         st.session_state.saved_expense = float(settings.get("expense", 850000))
         st.session_state.saved_age = int(settings.get("age", 27))
         st.session_state.saved_savings = float(settings.get("savings", 325000))
         st.session_state.saved_return = float(settings.get("return_rate", 11.0))
+        # 新增：載入通膨率，預設為 3.0
         st.session_state.saved_inflation = float(settings.get("inflation_rate", 3.0))
         
         st.session_state.data_loaded = True
@@ -211,6 +213,7 @@ def save_data_to_cloud(target_sheet, silent=False):
         write_ws("Fixed_Assets", pd.DataFrame(st.session_state.fixed_data))
         write_ws("Liabilities", pd.DataFrame(st.session_state.liab_data))
         
+        # 新增：儲存通膨率
         inf_rate = getattr(st.session_state, 'saved_inflation', 3.0)
         
         settings_data = pd.DataFrame([
@@ -391,9 +394,7 @@ def calculate_fire_curves_advanced(current_age, investable_assets, house_value, 
     curr_custom = custom_expense * 25
     
     for _ in range(len(ages) - 1):
-        # 【關鍵說明】複利計算：
-        # (目前資產 + 年投入資金) * (1 + 報酬率)
-        # 假設年投入資金在期初投入，享受完整一年的複利成長
+        # 【關鍵說明】複利計算：(目前資產 + 年投入資金) * (1 + 報酬率)
         curr_invest = (curr_invest + savings) * (1 + invest_return/100)
         
         if include_house_growth and curr_house > 0: curr_house = curr_house * (1 + house_growth/100)
@@ -692,6 +693,7 @@ def main_app():
                 st.info(exp)
             my_return = st.slider("年化報酬率 (%)", 0.0, 20.0, float(st.session_state.saved_return), 0.1)
             
+            # 【關鍵修正】確保通膨率有預設值，且從雲端載入
             default_inf = getattr(st.session_state, 'saved_inflation', 3.0)
             my_inflation = st.slider("預期通貨膨脹率 (%)", 0.0, 10.0, float(default_inf), 0.1)
             
@@ -722,6 +724,7 @@ def main_app():
                 base_wealth = 0
                 house_part = 0
 
+            # 將通膨率傳入計算函式
             ages, wealth_c, fire_c, custom_c = calculate_fire_curves_advanced(
                 my_age, base_wealth - house_part, house_part, my_savings, my_return, 3.0, my_inflation, my_expense, include_house
             )
