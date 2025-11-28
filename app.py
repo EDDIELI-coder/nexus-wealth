@@ -14,11 +14,11 @@ import json
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
 
-# CSS 樣式 (【修正】移除 div, span，解決 Icon 變成文字的問題)
+# CSS 樣式
 st.markdown("""
     <style>
-    /* 全局字體設定 - 僅針對文字標籤，不影響系統 Icon */
-    h1, h2, h3, h4, h5, h6, p, label, li, td, th, .stDataFrame, .stTable {
+    /* 全局字體設定 */
+    h1, h2, h3, h4, h5, h6, p, label, li, td, th, div, span, .stDataFrame, .stTable {
         font-family: "Roboto", "Microsoft JhengHei", sans-serif !important;
         line-height: 1.6 !important;
         letter-spacing: 0.5px;
@@ -408,26 +408,68 @@ def main_app():
             st.subheader(title)
             df = pd.DataFrame(st.session_state[key])
             if df.empty: df = pd.DataFrame(columns=cols)
+            
+            # 1. 計算該類別總金額
+            total_cat_val = 0
+            vals = []
             if "股數" in df.columns:
-                vals = []
                 for _, r in df.iterrows():
                     p = float(r.get("自訂價格",0) or 0)
                     if p<=0: p = float(r.get("參考市價",0) or 0)
-                    vals.append(p * float(r.get("股數",0) or 0) * rate)
+                    v = p * float(r.get("股數",0) or 0) * rate
+                    vals.append(v)
                 df["總值(TWD)"] = vals
+                total_cat_val = sum(vals)
+            elif "現值" in df.columns:
+                v_col = pd.to_numeric(df["現值"], errors='coerce').fillna(0)
+                total_cat_val = v_col.sum()
+            elif "金額" in df.columns:
+                v_col = pd.to_numeric(df["金額"], errors='coerce').fillna(0)
+                total_cat_val = v_col.sum()
+
+            # 2. 顯示總金額 Metric (回歸顯示)
+            st.metric(label="類別總值 (TWD)", value=f"${total_cat_val:,.0f}")
+
+            # 3. Data Editor 設定 (改為 fixed)
             cfg = {}
             if privacy_mode:
                 df.loc[:] = "****"
                 cfg = {c: st.column_config.Column(disabled=True) for c in df.columns}
             else:
                 cfg = {"總值(TWD)": st.column_config.NumberColumn(format="$%d", disabled=True)}
-            edited = st.data_editor(df, num_rows="dynamic", key=f"e_{key}", column_config=cfg)
+            
+            edited = st.data_editor(
+                df, 
+                num_rows="fixed", # 改為 fixed 防止誤觸
+                key=f"e_{key}", 
+                column_config=cfg,
+                use_container_width=True
+            )
+
+            # 4. 新增按鈕 (替代原本的動態新增)
+            if st.button(f"➕ 新增一筆", key=f"add_{key}"):
+                new_row = {c: "" for c in cols}
+                # 預設值
+                if "類別" in cols: 
+                    if "us" in key: new_row["類別"] = "美股"
+                    elif "tw" in key: new_row["類別"] = "台股"
+                    elif "fixed" in key: new_row["類別"] = "固定"
+                
+                # 確保是 list of dict
+                current_data = st.session_state[key]
+                if isinstance(current_data, pd.DataFrame):
+                    current_data = current_data.to_dict('records')
+                current_data.append(new_row)
+                st.session_state[key] = current_data
+                st.rerun()
+
             if not privacy_mode:
                 save_cols = [c for c in edited.columns if c != "總值(TWD)"]
                 st.session_state[key] = edited[save_cols].to_dict('records')
 
         c1, c2 = st.columns(2)
-        with c1: show_editor("🇺🇸 美股 (US Stocks)", "us_data", ["代號","股數","參考市價"], EXCHANGE_RATE)
+        # 修改標題
+        with c1: show_editor("🇺🇸 美股/虛擬貨幣 (US Stocks & Crypto)", "us_data", ["代號","股數","參考市價"], EXCHANGE_RATE)
         with c2: show_editor("🇹🇼 台股 (TW Stocks)", "tw_data", ["代號","股數","參考市價"], 1.0)
         c3, c4 = st.columns(2)
         with c3: show_editor("🏠 固定資產", "fixed_data", ["資產項目","現值"])
