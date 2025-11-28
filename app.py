@@ -162,6 +162,7 @@ def save_data_to_cloud(target_sheet):
                     if c in df_clean.columns:
                         df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
+                # 自動清理邏輯
                 if "代號" in df_clean.columns:
                     df_clean = df_clean[
                         (df_clean["代號"].astype(str).str.strip() != "") & 
@@ -532,17 +533,17 @@ def main_app():
                     cfg = {c: st.column_config.Column(disabled=True) for c in df.columns}
                     cfg["❌"] = st.column_config.CheckboxColumn(disabled=True)
                 else:
-                    # 設定欄位顯示屬性 (使用安全的 label 參數)
+                    # 設定欄位顯示屬性 (使用安全的 keyword arguments)
                     cfg = {
-                        "總價值(TWD)": st.column_config.NumberColumn("總價值(TWD)", format="$%d", disabled=True),
-                        "佔比 (%)": st.column_config.ProgressColumn("佔比 (%)", format="%.1f%%", min_value=0, max_value=1, disabled=True),
+                        "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
+                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0, disabled=True),
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
                         "股數": st.column_config.NumberColumn(label="股數", format="%.4f"),
                         "類別": st.column_config.TextColumn(label="類別", width="small"),
                         "自訂價格": st.column_config.NumberColumn(label="自訂價格", format="%.2f"),
-                        "參考市價": st.column_config.NumberColumn(label="參考市價", format="%.2f", disabled=False), # 讓使用者也能手動改
+                        "參考市價": st.column_config.NumberColumn(label="參考市價", format="%.2f", disabled=False),
                         "資產項目": st.column_config.TextColumn(label="資產項目", width="medium"),
                         "現值": st.column_config.NumberColumn(label="現值", format="$%d"),
                         "負債項目": st.column_config.TextColumn(label="負債項目", width="medium"),
@@ -589,8 +590,6 @@ def main_app():
                     else:
                         # 正常更新
                         cols_to_save = [c for c in edited.columns if c not in ["總價值(TWD)", "佔比 (%)", "❌"]]
-                        # 比較是否有變更才更新 (雖然 streamlit data_editor 會自動處理，但明確寫出比較保險)
-                        # 這裡直接更新 session state 即可
                         st.session_state[key] = edited[cols_to_save].to_dict('records')
 
         c1, c2 = st.columns(2)
