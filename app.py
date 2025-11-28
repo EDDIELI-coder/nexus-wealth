@@ -4,12 +4,12 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials # 改用 Google 官方新版驗證套件
 from datetime import date
 from streamlit import runtime
 import os
 import sys
-import json # 引入 JSON 模組
+import json
 
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
@@ -44,35 +44,44 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端資料庫核心 (Google Sheets) - JSON 直讀版 ---
+# --- 2. 雲端資料庫核心 (改用 google-auth) ---
 
 ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
 def get_google_client():
-    """連線到 Google，使用最穩定的 JSON 字串解析"""
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    """使用 google-auth 連線，解決舊版套件相容性問題"""
+    # 定義權限範圍
+    scopes = [
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/drive'
+    ]
     
     try:
-        # 嘗試讀取新的 gcp_json 設定 (整串 JSON 文字)
+        creds_dict = {}
+        # 優先嘗試讀取新的 JSON 字串格式
         if "gcp_json" in st.secrets and "text_content" in st.secrets["gcp_json"]:
             json_str = st.secrets["gcp_json"]["text_content"]
             creds_dict = json.loads(json_str)
-        else:
-            # 相容舊設定 (如果使用者還沒更新 Secrets)
+        # 相容舊的 TOML 格式
+        elif "gcp_service_account" in st.secrets:
             creds_dict = dict(st.secrets["gcp_service_account"])
+            # 自動修復私鑰格式
             if "private_key" in creds_dict:
                 creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        else:
+            st.error("❌ 找不到 Secrets 設定，請檢查 Streamlit 後台。")
+            st.stop()
 
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        # 使用新版驗證方式
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
         
     except Exception as e:
-        st.error(f"⚠️ Secrets 設定錯誤: {e}")
+        st.error(f"🔥 連線發生錯誤: {e}")
         st.stop()
 
 def check_login(username, password):
-    """驗證帳號密碼"""
     try:
         client = get_google_client()
         sh = client.open(ADMIN_DB_NAME)
@@ -85,15 +94,12 @@ def check_login(username, password):
                 return str(user.get('Target_Sheet'))
         return None
     except Exception as e:
-        st.error(f"登入失敗: {str(e)}")
-        if "invalid_grant" in str(e):
-             st.warning("⚠️ Google 拒絕連線，請檢查 Secrets 設定。")
-        elif "SpreadsheetNotFound" in str(e):
-             st.warning(f"⚠️ 找不到名為 '{ADMIN_DB_NAME}' 的試算表，請確認已建立並分享給機器人。")
+        st.error(f"登入驗證失敗: {e}")
+        if "SpreadsheetNotFound" in str(e):
+             st.warning(f"⚠️ 找不到名為 '{ADMIN_DB_NAME}' 的試算表，請確認您已建立該檔案並分享給機器人。")
         return None
 
 def init_user_sheet(target_sheet_name):
-    """連接並初始化使用者試算表"""
     client = get_google_client()
     try:
         sh = client.open(target_sheet_name)
@@ -124,7 +130,6 @@ def init_user_sheet(target_sheet_name):
 def load_data_from_cloud(target_sheet):
     try:
         sh = init_user_sheet(target_sheet)
-        
         def read_ws(title, cols):
             try:
                 data = sh.worksheet(title).get_all_records()
@@ -144,9 +149,7 @@ def load_data_from_cloud(target_sheet):
         st.session_state.saved_age = int(settings.get("age", 27))
         st.session_state.saved_savings = float(settings.get("savings", 325000))
         st.session_state.saved_return = float(settings.get("return_rate", 11.0))
-        
         st.session_state.data_loaded = True
-
     except Exception as e:
         st.error(f"雲端資料讀取失敗: {e}")
 
