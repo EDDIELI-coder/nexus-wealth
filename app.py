@@ -464,6 +464,10 @@ def main_app():
 
                 # 加入刪除欄位 (Checkbox)
                 df["❌"] = False
+                
+                # 【關鍵修正】把刪除欄位移到最左邊 (Column Reorder)
+                cols_order = ["❌"] + [c for c in df.columns if c != "❌"]
+                df = df[cols_order]
 
                 num_class = "cat-val-num-red" if is_liability else "cat-val-num"
                 val_str = "****" if privacy_mode else f"${total_cat_val:,.0f}"
@@ -509,6 +513,7 @@ def main_app():
                     if edited["❌"].any():
                         # 執行刪除
                         edited = edited[~edited["❌"]]
+                        # 儲存時要移除「❌」和「總值(TWD)」這兩個輔助欄位
                         save_cols = [c for c in edited.columns if c not in ["總值(TWD)", "❌"]]
                         st.session_state[key] = edited[save_cols].to_dict('records')
                         st.toast("已刪除項目")
