@@ -1,7 +1,6 @@
 streamlit
 pandas
-plotly
 yfinance
+plotly
 gspread
-oauth2client
-openpyxl
+google-auth
