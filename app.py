@@ -486,32 +486,32 @@ def main_app():
                     
                     # 2. 計算佔比
                     if total_cat_val > 0:
-                        df["佔比%"] = df["總價值(TWD)"] / total_cat_val
+                        df["佔比 (%)"] = df["總價值(TWD)"] / total_cat_val
                     else:
-                        df["佔比%"] = 0
+                        df["佔比 (%)"] = 0
                 elif "現值" in df.columns:
                     # 對於固定資產
                     df["總價值(TWD)"] = pd.to_numeric(df["現值"], errors='coerce').fillna(0)
                     total_cat_val = df["總價值(TWD)"].sum()
                     if total_cat_val > 0:
-                         df["佔比%"] = df["總價值(TWD)"] / total_cat_val
+                         df["佔比 (%)"] = df["總價值(TWD)"] / total_cat_val
                     else:
-                        df["佔比%"] = 0
+                        df["佔比 (%)"] = 0
                 elif "金額" in df.columns:
                     # 對於負債
                     df["總價值(TWD)"] = pd.to_numeric(df["金額"], errors='coerce').fillna(0)
                     total_cat_val = df["總價值(TWD)"].sum()
                     if total_cat_val > 0:
-                         df["佔比%"] = df["總價值(TWD)"] / total_cat_val
+                         df["佔比 (%)"] = df["總價值(TWD)"] / total_cat_val
                     else:
-                        df["佔比%"] = 0
+                        df["佔比 (%)"] = 0
 
                 # 加入刪除欄位
                 df["❌"] = False
                 
                 # 【關鍵】指定欄位順序
                 # 定義理想的順序清單
-                preferred_order = ["❌", "代號", "名稱", "股數", "類別", "自訂價格", "參考市價", "資產項目", "現值", "負債項目", "金額", "每月扣款", "總價值(TWD)", "佔比%"]
+                preferred_order = ["❌", "代號", "名稱", "股數", "類別", "自訂價格", "參考市價", "資產項目", "現值", "負債項目", "金額", "每月扣款", "總價值(TWD)", "佔比 (%)"]
                 
                 # 篩選出實際存在的欄位
                 final_cols = [c for c in preferred_order if c in df.columns]
@@ -532,10 +532,10 @@ def main_app():
                     cfg = {c: st.column_config.Column(disabled=True) for c in df.columns}
                     cfg["❌"] = st.column_config.CheckboxColumn(disabled=True)
                 else:
-                    # 設定欄位顯示屬性
+                    # 設定欄位顯示屬性 (使用安全的 label 參數)
                     cfg = {
-                        "總價值(TWD)": st.column_config.NumberColumn(format="$%d", disabled=True),
-                        "佔比%": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=1, disabled=True),
+                        "總價值(TWD)": st.column_config.NumberColumn("總價值(TWD)", format="$%d", disabled=True),
+                        "佔比 (%)": st.column_config.ProgressColumn("佔比 (%)", format="%.1f%%", min_value=0, max_value=1, disabled=True),
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
@@ -582,13 +582,13 @@ def main_app():
                     if edited["❌"].any():
                         edited = edited[~edited["❌"]]
                         # 存檔前移除計算欄位和輔助欄位
-                        cols_to_save = [c for c in edited.columns if c not in ["總價值(TWD)", "佔比%", "❌"]]
+                        cols_to_save = [c for c in edited.columns if c not in ["總價值(TWD)", "佔比 (%)", "❌"]]
                         st.session_state[key] = edited[cols_to_save].to_dict('records')
                         st.toast("已刪除項目")
                         st.rerun()
                     else:
                         # 正常更新
-                        cols_to_save = [c for c in edited.columns if c not in ["總價值(TWD)", "佔比%", "❌"]]
+                        cols_to_save = [c for c in edited.columns if c not in ["總價值(TWD)", "佔比 (%)", "❌"]]
                         # 比較是否有變更才更新 (雖然 streamlit data_editor 會自動處理，但明確寫出比較保險)
                         # 這裡直接更新 session state 即可
                         st.session_state[key] = edited[cols_to_save].to_dict('records')
