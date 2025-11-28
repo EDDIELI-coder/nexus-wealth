@@ -130,7 +130,7 @@ def load_data_from_cloud(target_sheet):
                 data = sh.worksheet(title).get_all_records()
                 df = pd.DataFrame(data)
                 for c in cols:
-                    if c not in df.columns: df[c] = ""
+                    if c not in df.columns: df[c] = "" # 確保欄位存在
                 return df
             except: return pd.DataFrame(columns=cols)
 
@@ -156,15 +156,20 @@ def save_data_to_cloud(target_sheet):
                 ws = sh.worksheet(title)
                 ws.clear()
                 
-                # 自動清理無效行 (空代號或名稱)
                 df_clean = df.copy()
+                # 確保數字欄位正確
                 num_cols = ["股數", "現值", "金額", "自訂價格", "參考市價", "每月扣款"]
                 for c in num_cols:
                     if c in df_clean.columns:
                         df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
+                # 自動清理邏輯
                 if "代號" in df_clean.columns:
-                    df_clean = df_clean[df_clean["代號"].astype(str).str.strip() != ""]
+                    df_clean = df_clean[
+                        (df_clean["代號"].astype(str).str.strip() != "") & 
+                        (df_clean["代號"].astype(str).str.strip().lower() != "nan") &
+                        (df_clean["代號"].astype(str).str.strip() != "0")
+                    ]
                 elif "資產項目" in df_clean.columns:
                     df_clean = df_clean[df_clean["資產項目"].astype(str).str.strip() != ""]
                 elif "負債項目" in df_clean.columns:
@@ -364,10 +369,18 @@ def main_app():
     st.title(f"🌌 NEXUS: {st.session_state.current_user}'s Command")
     if 'fire_states' not in st.session_state: st.session_state.fire_states = {"Lean": True, "Barista": True, "Regular": True, "Fat": True}
     
-    df_us = pd.DataFrame(st.session_state.us_data)
-    df_tw = pd.DataFrame(st.session_state.tw_data)
-    df_fixed = pd.DataFrame(st.session_state.fixed_data)
-    df_liab = pd.DataFrame(st.session_state.liab_data)
+    # 【關鍵修正】確保欄位存在，防止 KeyError
+    def ensure_cols(df, cols):
+        if df.empty: return pd.DataFrame(columns=cols)
+        for c in cols:
+            if c not in df.columns:
+                df[c] = 0 if c in ["金額", "每月扣款", "現值", "股數"] else ""
+        return df
+
+    df_us = ensure_cols(pd.DataFrame(st.session_state.us_data), ["代號", "名稱", "股數", "類別", "自訂價格", "參考市價"])
+    df_tw = ensure_cols(pd.DataFrame(st.session_state.tw_data), ["代號", "名稱", "股數", "類別", "自訂價格", "參考市價"])
+    df_fixed = ensure_cols(pd.DataFrame(st.session_state.fixed_data), ["資產項目", "現值", "類別"])
+    df_liab = ensure_cols(pd.DataFrame(st.session_state.liab_data), ["負債項目", "金額", "每月扣款"])
 
     assets_list = []
     for _, row in df_us.iterrows():
@@ -396,8 +409,11 @@ def main_app():
 
     df_assets = pd.DataFrame(assets_list)
     total_assets = df_assets["價值"].sum() if not df_assets.empty else 0
-    total_liab = df_liab["金額"].sum() if not df_liab.empty else 0
-    total_monthly = df_liab["每月扣款"].sum() if not df_liab.empty else 0
+    
+    # 計算負債
+    total_liab = pd.to_numeric(df_liab["金額"], errors='coerce').fillna(0).sum()
+    total_monthly = pd.to_numeric(df_liab["每月扣款"], errors='coerce').fillna(0).sum()
+    
     net_worth = total_assets - total_liab
 
     save_daily_record_cloud(st.session_state.target_sheet, net_worth, total_assets, total_liab, total_monthly)
@@ -441,13 +457,17 @@ def main_app():
                 df = pd.DataFrame(st.session_state[key])
                 if df.empty: df = pd.DataFrame(columns=cols)
                 
+                # 確保欄位格式正確
+                for c in df.columns:
+                    if c in ["股數", "現值", "金額", "自訂價格", "參考市價", "每月扣款"]:
+                        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+                    else:
+                        df[c] = df[c].astype(str).replace("nan", "")
+
                 # 計算總金額
                 total_cat_val = 0
                 vals = []
                 if "股數" in df.columns:
-                    df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
-                    df["自訂價格"] = pd.to_numeric(df.get("自訂價格", 0), errors='coerce').fillna(0)
-                    df["參考市價"] = pd.to_numeric(df.get("參考市價", 0), errors='coerce').fillna(0)
                     for _, r in df.iterrows():
                         p = float(r.get("自訂價格",0))
                         if p<=0: p = float(r.get("參考市價",0))
@@ -456,19 +476,15 @@ def main_app():
                     df["總值(TWD)"] = vals
                     total_cat_val = sum(vals)
                 elif "現值" in df.columns:
-                    v_col = pd.to_numeric(df["現值"], errors='coerce').fillna(0)
-                    total_cat_val = v_col.sum()
+                    total_cat_val = df["現值"].sum()
                 elif "金額" in df.columns:
-                    v_col = pd.to_numeric(df["金額"], errors='coerce').fillna(0)
-                    total_cat_val = v_col.sum()
+                    total_cat_val = df["金額"].sum()
 
-                # 加入刪除欄位 (Checkbox)
+                # 加入刪除欄位
                 df["❌"] = False
                 
-                # 【關鍵修正】把刪除欄位移到最左邊 (Column Reorder)
+                # 【關鍵】重新排列欄位，把 ❌ 放到最左邊
                 cols_order = ["❌"] + [c for c in df.columns if c != "❌"]
-                
-                # 這裡要先把 df 的欄位順序排好，st.data_editor 才會照這個順序顯示
                 df = df[cols_order]
 
                 num_class = "cat-val-num-red" if is_liability else "cat-val-num"
@@ -484,16 +500,20 @@ def main_app():
                 else:
                     cfg = {
                         "總值(TWD)": st.column_config.NumberColumn(format="$%d", disabled=True),
-                        "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除")
+                        "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
+                        # 設定其他欄位為文字輸入，解除鎖定
+                        "代號": st.column_config.TextColumn(label="代號", width="small"),
+                        "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
+                        "資產項目": st.column_config.TextColumn(label="資產項目", width="medium"),
+                        "負債項目": st.column_config.TextColumn(label="負債項目", width="medium")
                     }
                 
-                # 在 data_editor 中加入 column_order 參數強制排序
                 edited = st.data_editor(
                     df, 
                     num_rows="fixed",
                     key=f"e_{key}", 
                     column_config=cfg,
-                    column_order=cols_order, # 強制指定顯示順序
+                    column_order=cols_order,
                     use_container_width=True
                 )
 
@@ -515,15 +535,12 @@ def main_app():
 
                 if not privacy_mode:
                     if edited["❌"].any():
-                        # 執行刪除
                         edited = edited[~edited["❌"]]
-                        # 儲存時要移除「❌」和「總值(TWD)」這兩個輔助欄位
                         save_cols = [c for c in edited.columns if c not in ["總值(TWD)", "❌"]]
                         st.session_state[key] = edited[save_cols].to_dict('records')
                         st.toast("已刪除項目")
                         st.rerun()
                     else:
-                        # 正常更新
                         save_cols = [c for c in edited.columns if c not in ["總值(TWD)", "❌"]]
                         st.session_state[key] = edited[save_cols].to_dict('records')
 
@@ -532,7 +549,7 @@ def main_app():
         with c2: show_editor("🇹🇼 台股 (TW Stocks)", "tw_data", ["代號","股數","參考市價"], 1.0)
         c3, c4 = st.columns(2)
         with c3: show_editor("🏠 固定資產", "fixed_data", ["資產項目","現值"])
-        with c4: show_editor("💳 負債", "liab_data", ["負債項目","金額"], is_liability=True)
+        with c4: show_editor("💳 負債", "liab_data", ["負債項目","金額", "每月扣款"], is_liability=True)
 
     with tab_fire:
         c_f1, c_f2 = st.columns([1, 2])
