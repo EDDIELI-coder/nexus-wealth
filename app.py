@@ -308,7 +308,7 @@ def update_portfolio_data(df, category_default):
     st.toast(f"✅ {category_default} 更新完成！")
     return df
 
-# --- 【修正】補回 parse_file ---
+# --- 【修正】補回 parse_file 函式 ---
 def parse_file(uploaded_file, import_type):
     try:
         if uploaded_file.name.endswith('.csv'): 
@@ -596,7 +596,7 @@ def main_app():
                     cfg = {c: st.column_config.Column(disabled=True) for c in df.columns}
                     cfg["❌"] = st.column_config.CheckboxColumn(disabled=True)
                 else:
-                    # 【關鍵修復】使用最標準的參數寫法，避免 TypeError
+                    # 【關鍵修復】ProgressColumn 參數修復
                     cfg = {
                         "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
                         "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0),
@@ -705,7 +705,6 @@ def main_app():
             with c_v1:
                 st.subheader("資產分佈")
                 fig = px.sunburst(df_assets, path=['類別', '資產'], values='價值', color='類別')
-                # 【關鍵修正】讓點擊區塊後佔比變 100%
                 fig.update_traces(textinfo="label+percent entry", insidetextorientation='horizontal')
                 fig.update_layout(
                     template="plotly_dark",
