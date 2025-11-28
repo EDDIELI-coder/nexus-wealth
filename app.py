@@ -48,24 +48,30 @@ ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
 def get_google_client():
-    """連線到 Google (支援 JSON 字串直接讀取)"""
+    """連線到 Google"""
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive'
     ]
     
     try:
-        # 優先嘗試讀取 JSON 字串格式
-        if "gcp_json" in st.secrets and "text_content" in st.secrets["gcp_json"]:
-            json_str = st.secrets["gcp_json"]["text_content"]
-            creds_dict = json.loads(json_str)
-            # JSON 裡的 \n 不需要額外處理，json.loads 會自己搞定
-            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-            return gspread.authorize(creds)
-            
-        else:
-            st.error("❌ 找不到 Secrets 設定！請確認已在 Secrets 貼上 [gcp_json] 區塊。")
+        # 這裡會去讀取 secrets.toml 裡的 [gcp_service_account] 區塊
+        if "gcp_service_account" not in st.secrets:
+            st.error("❌ 找不到 Secrets 設定！請確認已在 Streamlit 後台貼上 [gcp_service_account] 區塊。")
             st.stop()
+
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        
+        # 自動修復私鑰格式：把 \\n 字串轉回真正的換行符號
+        if "private_key" in creds_dict:
+            key = creds_dict["private_key"]
+            if "\\n" in key:
+                key = key.replace("\\n", "\n")
+            creds_dict["private_key"] = key
+
+        # 建立連線
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        return gspread.authorize(creds)
         
     except Exception as e:
         st.error(f"🔥 連線發生錯誤: {e}")
