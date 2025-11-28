@@ -13,7 +13,7 @@ import sys
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
 
-# CSS 樣式 (保留你原本的精美設計)
+# CSS 樣式
 st.markdown("""
     <style>
     h1, h2, h3, h4, h5, h6, p, label, li, td, th, .stDataFrame, .stTable {
@@ -24,8 +24,6 @@ st.markdown("""
     }
     .stSelectbox div[data-baseweb="select"] > div { min-height: 45px; }
     .streamlit-expanderHeader { font-weight: 700 !important; font-size: 16px !important; }
-    
-    /* NEXUS 卡片樣式 */
     .nexus-card {
         background-color: #1a1a1a; border: 1px solid #333; border-radius: 10px;
         padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
@@ -35,34 +33,37 @@ st.markdown("""
     .nexus-value { color: #00F0FF; font-size: 32px; font-weight: 700; text-shadow: 0 0 10px rgba(0,240,255,0.3); }
     .nexus-value-red { color: #ff4b4b !important; font-size: 32px; font-weight: 700; text-shadow: 0 0 10px rgba(255, 75, 75, 0.3); }
     .nexus-value-orange { color: #ffa500 !important; font-size: 32px; font-weight: 700; text-shadow: 0 0 10px rgba(255, 165, 0, 0.3); }
-    
-    /* 按鈕樣式 */
     div.stButton > button {
         width: 100%; min-height: 50px; border-radius: 12px; border: 1px solid #444;
         background: linear-gradient(145deg, #222, #181818); transition: all 0.3s;
     }
     div.stButton > button:hover { border-color: #00F0FF; transform: translateY(-2px); }
-    
     hr { margin: 1.5em 0; border-color: #444; }
     section[data-testid="stSidebar"] { background-color: #0e0e0e; border-right: 1px solid #222; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端資料庫核心 (Google Sheets) ---
+# --- 2. 雲端資料庫核心 (Google Sheets) - 含自動修復機制 ---
 
-# 管理員資料庫名稱 (存放 Users 分頁的那本)
 ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
 
 def get_google_client():
-    """連線到 Google"""
+    """連線到 Google，包含 Private Key 自動修復機制"""
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    
+    # 讀取 Secrets
     creds_dict = dict(st.secrets["gcp_service_account"])
+    
+    # 【關鍵修復】: 強制替換換行符號，解決 Invalid JWT Signature 問題
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
 def check_login(username, password):
-    """驗證帳號密碼，回傳目標試算表名稱"""
+    """驗證帳號密碼"""
     try:
         client = get_google_client()
         sh = client.open(ADMIN_DB_NAME)
@@ -70,25 +71,23 @@ def check_login(username, password):
         users_data = ws.get_all_records()
         
         for user in users_data:
-            # 強制轉字串比對
             if str(user.get('Username')).strip() == str(username).strip() and \
                str(user.get('Password')).strip() == str(password).strip():
                 return str(user.get('Target_Sheet'))
         return None
     except Exception as e:
-        st.error(f"登入驗證失敗: {e}")
+        st.error(f"登入驗證失敗 (可能是 Google Sheet 權限問題或帳密錯誤): {e}")
         return None
 
 def init_user_sheet(target_sheet_name):
-    """連接並初始化使用者的個人試算表"""
+    """連接並初始化使用者試算表"""
     client = get_google_client()
     try:
         sh = client.open(target_sheet_name)
     except gspread.SpreadsheetNotFound:
-        st.error(f"❌ 找不到試算表：{target_sheet_name}。請確認已建立並分享給機器人。")
+        st.error(f"❌ 找不到試算表：{target_sheet_name}。請確認已建立並分享給機器人 Email。")
         st.stop()
     
-    # 確保必要分頁存在
     required = {
         "US_Stocks": ["代號", "名稱", "股數", "類別", "自訂價格", "參考市價"],
         "TW_Stocks": ["代號", "名稱", "股數", "類別", "自訂價格", "參考市價"],
@@ -98,17 +97,18 @@ def init_user_sheet(target_sheet_name):
         "History": ["Date", "Net_Worth", "Total_Assets", "Total_Liabilities", "Monthly_Payment"]
     }
     
-    curr_titles = [ws.title for ws in sh.worksheets()]
-    for title, headers in required.items():
-        if title not in curr_titles:
-            ws = sh.add_worksheet(title=title, rows=50, cols=10)
-            ws.append_row(headers)
+    try:
+        curr_titles = [ws.title for ws in sh.worksheets()]
+        for title, headers in required.items():
+            if title not in curr_titles:
+                ws = sh.add_worksheet(title=title, rows=50, cols=10)
+                ws.append_row(headers)
+    except: pass
     return sh
 
-# --- 3. 資料讀寫邏輯 (雲端版) ---
+# --- 3. 資料讀寫邏輯 ---
 
 def load_data_from_cloud(target_sheet):
-    """讀取資料並放入 Session State"""
     try:
         sh = init_user_sheet(target_sheet)
         
@@ -116,7 +116,6 @@ def load_data_from_cloud(target_sheet):
             try:
                 data = sh.worksheet(title).get_all_records()
                 df = pd.DataFrame(data)
-                # 確保必要欄位存在，若無資料回傳空 DataFrame 但有欄位
                 if df.empty: return pd.DataFrame(columns=cols)
                 return df
             except: return pd.DataFrame(columns=cols)
@@ -126,10 +125,8 @@ def load_data_from_cloud(target_sheet):
         st.session_state.fixed_data = read_ws("Fixed_Assets", ["資產項目", "現值", "類別"])
         st.session_state.liab_data = read_ws("Liabilities", ["負債項目", "金額", "每月扣款"])
         
-        # 讀取設定
         settings_df = read_ws("Settings", ["Key", "Value"])
         settings = dict(zip(settings_df['Key'], settings_df['Value'])) if not settings_df.empty else {}
-        
         st.session_state.saved_expense = float(settings.get("expense", 850000))
         st.session_state.saved_age = int(settings.get("age", 27))
         st.session_state.saved_savings = float(settings.get("savings", 325000))
@@ -141,31 +138,24 @@ def load_data_from_cloud(target_sheet):
         st.error(f"雲端資料讀取失敗: {e}")
 
 def save_data_to_cloud(target_sheet):
-    """將 Session State 的資料寫回雲端"""
     try:
         sh = init_user_sheet(target_sheet)
-        
         def write_ws(title, df):
             try:
                 ws = sh.worksheet(title)
                 ws.clear()
-                # DataFrame 轉 List (含標題)
                 if not df.empty:
-                    # 處理數值 NaN 轉 0
                     df = df.fillna(0)
                     ws.update([df.columns.values.tolist()] + df.values.tolist())
                 else:
-                    ws.update([df.columns.values.tolist()]) # 只寫標題
-            except Exception as e:
-                st.warning(f"寫入 {title} 失敗: {e}")
+                    ws.update([df.columns.values.tolist()])
+            except: pass
 
-        # 寫入各表
         write_ws("US_Stocks", pd.DataFrame(st.session_state.us_data))
         write_ws("TW_Stocks", pd.DataFrame(st.session_state.tw_data))
         write_ws("Fixed_Assets", pd.DataFrame(st.session_state.fixed_data))
         write_ws("Liabilities", pd.DataFrame(st.session_state.liab_data))
         
-        # 寫入設定
         settings_data = pd.DataFrame([
             {"Key": "expense", "Value": st.session_state.saved_expense},
             {"Key": "age", "Value": st.session_state.saved_age},
@@ -173,31 +163,25 @@ def save_data_to_cloud(target_sheet):
             {"Key": "return_rate", "Value": st.session_state.saved_return}
         ])
         write_ws("Settings", settings_data)
-        
         st.toast("✅ 雲端同步完成！", icon="☁️")
     except Exception as e:
         st.error(f"存檔失敗: {e}")
 
 def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthly_payment):
-    """寫入歷史紀錄 (每天一筆)"""
     today = str(date.today())
     try:
         sh = init_user_sheet(target_sheet)
         ws = sh.worksheet("History")
-        
         try:
             records = ws.get_all_records()
             df = pd.DataFrame(records)
-            # 檢查今天是否已存在，避免重複寫入
             if not df.empty and str(today) in df['Date'].astype(str).values:
                 return
         except: pass
-        
         ws.append_row([today, net_worth, assets, liabilities, monthly_payment])
-    except Exception as e:
-        print(f"歷史紀錄寫入錯誤: {e}")
+    except: pass
 
-# --- 4. 輔助運算函式 (AI, FIRE, Price) ---
+# --- 4. 輔助函式 ---
 
 def get_precise_price(ticker):
     try:
@@ -223,7 +207,6 @@ def update_portfolio_data(df, category_default):
             price = get_precise_price(ticker)
             if price > 0: df.at[index, "參考市價"] = price
             
-            # 補全資料
             if pd.isna(row.get("名稱")) or str(row.get("名稱")) == "":
                 try: df.at[index, "名稱"] = yf.Ticker(ticker).info.get('shortName', ticker)
                 except: pass
@@ -233,7 +216,6 @@ def update_portfolio_data(df, category_default):
     return df
 
 def parse_file(uploaded_file, import_type):
-    """智慧型檔案解析"""
     try:
         if uploaded_file.name.endswith('.csv'): 
             try: df = pd.read_csv(uploaded_file, encoding='utf-8')
@@ -305,19 +287,15 @@ def calculate_fire_curves_advanced(current_age, investable_assets, house_value, 
 def predict_portfolio_return_detail(df_assets, include_house):
     if df_assets.empty: return 5.0, "無資產"
     returns_map = {"美股": 10.0, "台股": 8.0, "虛擬貨幣": 25.0, "現金": 1.0, "房產": 3.0, "固定資產": 3.0}
-    
     df_calc = df_assets.copy()
     msg_prefix = "⚠️ **AI 計算模式：含房產 (以 3% 增值率平均)**" if include_house else "✅ **AI 計算模式：排除房產 (僅計算流動資產)**"
     if not include_house:
         df_calc = df_calc[~df_calc['類別'].str.contains('房產|固定|地產', na=False)]
-
     total_val = df_calc["價值"].sum()
     if total_val == 0: return 5.0, "無有效資產可計算"
-
     weighted_return = 0.0
     explanation = [f"**{msg_prefix}**"]
     grouped = df_calc.groupby("類別")["價值"].sum()
-    
     for cat, val in grouped.items():
         r = 3.0
         for k, v in returns_map.items():
@@ -325,7 +303,6 @@ def predict_portfolio_return_detail(df_assets, include_house):
         weight = val / total_val
         weighted_return += r * weight
         explanation.append(f"• **{cat}**: 佔比 {weight*100:.1f}% x 預期 {r}%")
-
     return round(weighted_return, 2), "\n".join(explanation)
 
 # --- 5. 登入頁面 ---
@@ -352,7 +329,6 @@ def login_page():
 
 # --- 6. 主應用程式 (UI) ---
 def main_app():
-    # 隱私模式與登出
     with st.sidebar:
         st.info(f"👤 User: **{st.session_state.current_user}**")
         privacy_mode = st.toggle("👁️ **隱私模式 (Hide)**", value=False)
@@ -366,40 +342,29 @@ def main_app():
 
     def fmt_money(val): return "****" if privacy_mode else f"${val:,.0f}"
 
-    # 載入資料
     if not st.session_state.get('data_loaded'):
         with st.spinner("正在從雲端載入您的資產數據..."):
             load_data_from_cloud(st.session_state.target_sheet)
 
     st.title(f"🌌 NEXUS: {st.session_state.current_user}'s Command")
-
-    # 初始化資料變數
     if 'fire_states' not in st.session_state: st.session_state.fire_states = {"Lean": True, "Barista": True, "Regular": True, "Fat": True}
     
-    # 準備資料
     df_us = pd.DataFrame(st.session_state.us_data)
     df_tw = pd.DataFrame(st.session_state.tw_data)
     df_fixed = pd.DataFrame(st.session_state.fixed_data)
     df_liab = pd.DataFrame(st.session_state.liab_data)
 
-    # 計算資產總值
     assets_list = []
-    
-    # 美股/加密 (x 匯率)
     for _, row in df_us.iterrows():
         p = float(row.get("自訂價格", 0) or 0)
         if p <= 0: p = float(row.get("參考市價", 0) or 0)
         v = p * float(row.get("股數", 0) or 0) * EXCHANGE_RATE
         assets_list.append({"資產": row.get("名稱",""), "類別": row.get("類別","美股"), "價值": v})
-    
-    # 台股 (x 1)
     for _, row in df_tw.iterrows():
         p = float(row.get("自訂價格", 0) or 0)
         if p <= 0: p = float(row.get("參考市價", 0) or 0)
         v = p * float(row.get("股數", 0) or 0)
         assets_list.append({"資產": row.get("名稱",""), "類別": row.get("類別","台股"), "價值": v})
-        
-    # 固定資產
     for _, row in df_fixed.iterrows():
         assets_list.append({"資產": row.get("資產項目",""), "類別": row.get("類別","固定"), "價值": float(row.get("現值", 0) or 0)})
 
@@ -409,10 +374,8 @@ def main_app():
     total_monthly = df_liab["每月扣款"].sum() if not df_liab.empty else 0
     net_worth = total_assets - total_liab
 
-    # 自動記錄歷史 (每日一次)
     save_daily_record_cloud(st.session_state.target_sheet, net_worth, total_assets, total_liab, total_monthly)
 
-    # 頂部儀表板
     c1, c2, c3, c4 = st.columns(4)
     with c1: st.markdown(f"""<div class="nexus-card"><div class="nexus-label">💰 淨資產 (Net Worth)</div><div class="nexus-value">{fmt_money(net_worth)}</div></div>""", unsafe_allow_html=True)
     with c2: st.markdown(f"""<div class="nexus-card"><div class="nexus-label">🏦 總資產 (Total Assets)</div><div class="nexus-value">{fmt_money(total_assets)}</div></div>""", unsafe_allow_html=True)
@@ -420,11 +383,8 @@ def main_app():
     with c4: st.markdown(f"""<div class="nexus-card"><div class="nexus-label">💸 月支出 (Burn Rate)</div><div class="nexus-value-orange">{fmt_money(total_monthly)}</div></div>""", unsafe_allow_html=True)
 
     st.divider()
-    
-    # 分頁功能
     tab_edit, tab_fire, tab_vis, tab_hist = st.tabs(["📝 **Asset Editor**", "🔥 **FIRE Analytics**", "📊 **Visuals**", "📈 **History**"])
 
-    # === Tab 1: 編輯與更新 ===
     with tab_edit:
         c_btn, _ = st.columns([1, 4])
         with c_btn:
@@ -448,13 +408,10 @@ def main_app():
                     st.rerun()
                 else: st.error(err)
 
-        # 編輯表格
         def show_editor(title, key, cols, rate=1.0):
             st.subheader(title)
             df = pd.DataFrame(st.session_state[key])
             if df.empty: df = pd.DataFrame(columns=cols)
-            
-            # 計算顯示用欄位
             if "股數" in df.columns:
                 vals = []
                 for _, r in df.iterrows():
@@ -462,70 +419,55 @@ def main_app():
                     if p<=0: p = float(r.get("參考市價",0) or 0)
                     vals.append(p * float(r.get("股數",0) or 0) * rate)
                 df["總值(TWD)"] = vals
-
             cfg = {}
             if privacy_mode:
                 df.loc[:] = "****"
                 cfg = {c: st.column_config.Column(disabled=True) for c in df.columns}
             else:
                 cfg = {"總值(TWD)": st.column_config.NumberColumn(format="$%d", disabled=True)}
-
             edited = st.data_editor(df, num_rows="dynamic", key=f"e_{key}", column_config=cfg)
             if not privacy_mode:
-                # 移除計算欄位後存回 state
                 save_cols = [c for c in edited.columns if c != "總值(TWD)"]
                 st.session_state[key] = edited[save_cols].to_dict('records')
 
         c1, c2 = st.columns(2)
         with c1: show_editor("🇺🇸 美股 (US Stocks)", "us_data", ["代號","股數","參考市價"], EXCHANGE_RATE)
         with c2: show_editor("🇹🇼 台股 (TW Stocks)", "tw_data", ["代號","股數","參考市價"], 1.0)
-        
         c3, c4 = st.columns(2)
         with c3: show_editor("🏠 固定資產", "fixed_data", ["資產項目","現值"])
         with c4: show_editor("💳 負債", "liab_data", ["負債項目","金額"])
 
-    # === Tab 2: FIRE 分析 ===
     with tab_fire:
         c_f1, c_f2 = st.columns([1, 2])
         with c_f1:
             st.subheader("參數設定")
-            
             include_house = st.checkbox("納入房產計算", value=True)
             if st.button("🤖 AI 分析預期報酬率"):
                 r, exp = predict_portfolio_return_detail(df_assets, include_house)
                 st.session_state.saved_return = r
                 st.info(exp)
-
             my_return = st.slider("年化報酬率 (%)", 0.0, 20.0, float(st.session_state.saved_return), 0.1)
             my_expense = st.number_input("目標年支出", value=float(st.session_state.saved_expense), step=10000.0)
             my_age = st.number_input("目前年齡", value=int(st.session_state.saved_age))
             my_savings = st.number_input("年儲蓄金額", value=float(st.session_state.saved_savings), step=10000.0)
-            
-            # 更新 Session
             if my_return != st.session_state.saved_return or my_expense != st.session_state.saved_expense:
                 st.session_state.saved_return = my_return
                 st.session_state.saved_expense = my_expense
                 st.session_state.saved_age = my_age
                 st.session_state.saved_savings = my_savings
-
         with c_f2:
             st.subheader("資產累積預測")
-            # 簡單計算基數
-            base_wealth = net_worth if include_house else (net_worth - df_assets[df_assets['類別'].str.contains('房產|固定')]['價值'].sum())
-            house_part = df_assets[df_assets['類別'].str.contains('房產|固定')]['價值'].sum() if include_house else 0
-            
+            base_wealth = net_worth if include_house else (net_worth - df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum())
+            house_part = df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum() if include_house else 0
             ages, wealth_c, fire_c, custom_c = calculate_fire_curves_advanced(
                 my_age, base_wealth - house_part, house_part, my_savings, my_return, 3.0, 3.0, my_expense, include_house
             )
-            
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=ages, y=wealth_c, name="預測資產", line=dict(color='#00F0FF', width=4)))
             fig.add_trace(go.Scatter(x=ages, y=custom_c, name="FIRE 目標", line=dict(color='#FFD166', dash='dot')))
-            
             fig.update_layout(template="plotly_dark", height=500, xaxis_title="年齡", yaxis_title="資產 (TWD)")
             st.plotly_chart(fig, use_container_width=True)
 
-    # === Tab 3: 視覺化 ===
     with tab_vis:
         if not df_assets.empty:
             c_v1, c_v2 = st.columns(2)
@@ -540,7 +482,6 @@ def main_app():
                 if privacy_mode: df_show['價值'] = "****"
                 st.dataframe(df_show, use_container_width=True, hide_index=True)
 
-    # === Tab 4: 歷史紀錄 ===
     with tab_hist:
         st.subheader("資產成長紀錄 (Cloud History)")
         try:
@@ -551,17 +492,10 @@ def main_app():
                 fig = px.line(df_hist, x='Date', y='Net_Worth', title="淨資產趨勢", markers=True)
                 fig.update_layout(template="plotly_dark")
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("尚無歷史紀錄，明日將自動生成第一筆。")
-        except:
-            st.warning("讀取歷史紀錄時發生錯誤")
+            else: st.info("尚無歷史紀錄，明日將自動生成第一筆。")
+        except: st.warning("讀取歷史紀錄時發生錯誤")
 
-# --- 程式入口 ---
 if __name__ == "__main__":
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
-
-    if st.session_state.logged_in:
-        main_app()
-    else:
-        login_page()
+    if "logged_in" not in st.session_state: st.session_state.logged_in = False
+    if st.session_state.logged_in: main_app()
+    else: login_page()
