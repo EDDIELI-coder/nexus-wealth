@@ -73,6 +73,7 @@ def get_google_client():
             st.stop()
 
         creds_dict = dict(st.secrets["gcp_service_account"])
+        # 自動修復私鑰格式
         if "private_key" in creds_dict:
             key = creds_dict["private_key"]
             if "\\n" in key: key = key.replace("\\n", "\n")
@@ -242,10 +243,8 @@ def save_daily_record_cloud(target_sheet, net_worth, assets, liabilities, monthl
         ws.append_row([today, net_worth, assets, liabilities, monthly_payment])
     except: pass
 
-# --- 【核心功能】智慧型股價與代號修正 ---
 def fetch_smart_ticker_data(symbol):
     symbol = str(symbol).strip().upper()
-    
     t = yf.Ticker(symbol)
     try:
         hist = t.history(period="1d")
@@ -295,24 +294,16 @@ def update_portfolio_data(df, category_default):
     for index, row in df.iterrows():
         try:
             ticker = str(row.get("代號", "")).strip()
-            
             my_bar.progress((index + 1) / total_rows, text=f"正在更新: {ticker}")
-            
             if not ticker or ticker.lower() == "nan": continue
-            
             price, valid_symbol, name = fetch_smart_ticker_data(ticker)
-            
             if price > 0:
                 df.at[index, "參考市價"] = price
-                if valid_symbol != ticker:
-                     df.at[index, "代號"] = valid_symbol
-                if pd.isna(row.get("名稱")) or str(row.get("名稱")).strip() == "":
-                    df.at[index, "名稱"] = name
-            
+                if valid_symbol != ticker: df.at[index, "代號"] = valid_symbol
+                if pd.isna(row.get("名稱")) or str(row.get("名稱")).strip() == "": df.at[index, "名稱"] = name
             if pd.isna(row.get("類別")) or str(row.get("類別")) == "":
                 df.at[index, "類別"] = category_default
-        except Exception:
-            continue
+        except Exception: continue
             
     my_bar.empty()
     return df
@@ -340,12 +331,10 @@ def parse_file(uploaded_file, import_type):
             
             for _, row in df.iterrows():
                 new_data.append({
-                    "代號": row[ticker_col], 
-                    "名稱": "", 
+                    "代號": row[ticker_col], "名稱": "", 
                     "股數": float(row[shares_col]),
                     "類別": "美股" if import_type == "stock_us" else "台股",
-                    "自訂價格": float(row[price_col]) if price_col else 0.0, 
-                    "參考市價": 0.0
+                    "自訂價格": float(row[price_col]) if price_col else 0.0, "參考市價": 0.0
                 })
 
         elif import_type == "fixed":
@@ -375,27 +364,34 @@ def parse_file(uploaded_file, import_type):
         return pd.DataFrame(new_data), None
     except Exception as e: return None, f"解析失敗: {str(e)}"
 
-# --- 快取計算 (減少崩潰) ---
+# --- 【修正】FIRE 曲線計算修正 ---
 @st.cache_data
-def calculate_fire_curves_advanced(current_age, investable_assets, house_value, savings, invest_return, house_growth, inflation, custom_expense, include_house_growth):
+def calculate_fire_curves_advanced(current_age, liquid_assets, house_value, total_debt, savings, invest_return, house_growth, inflation, custom_expense, include_house_growth):
     ages = list(range(current_age, 66))
-    curr_invest = investable_assets
+    
+    # 初始狀態
+    curr_liquid = liquid_assets  # 只有流動資產會參與複利
     curr_house = house_value
-    wealth_curve = [curr_invest + curr_house]
+    wealth_curve = [curr_liquid + curr_house - total_debt] # 淨資產起始點
     
     levels = {"Lean": 600000, "Barista": 800000, "Regular": 1000000, "Fat": 2500000}
     level_curves = {k: [v * 25] for k, v in levels.items()}
     custom_target = [custom_expense * 25]
-    
     curr_levels = {k: v * 25 for k, v in levels.items()}
     curr_custom = custom_expense * 25
     
     for _ in range(len(ages) - 1):
-        # 複利計算
-        curr_invest = (curr_invest + savings) * (1 + invest_return/100)
+        # 複利計算：只針對流動資產 (Liquid Assets)
+        curr_liquid = (curr_liquid + savings) * (1 + invest_return/100)
         
-        if include_house_growth and curr_house > 0: curr_house = curr_house * (1 + house_growth/100)
-        wealth_curve.append(curr_invest + curr_house)
+        # 房產增值 (如果有的話)
+        if include_house_growth and curr_house > 0:
+            curr_house = curr_house * (1 + house_growth/100)
+        
+        # 淨資產 = 流動資產 + 房產 - 負債
+        # 這裡假設負債金額不變 (保守估計)，若要更精確可模擬還款
+        wealth_curve.append(curr_liquid + curr_house - total_debt)
+        
         for k in curr_levels:
             curr_levels[k] *= (1 + inflation/100)
             level_curves[k].append(curr_levels[k])
@@ -615,7 +611,7 @@ def main_app():
                 else:
                     cfg = {
                         "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
-                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0), 
+                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0),
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
@@ -688,7 +684,6 @@ def main_app():
                 r, exp = predict_portfolio_return_detail(df_assets, include_house)
                 st.session_state.saved_return = r
                 st.info(exp)
-            # --- 互動式滑桿與圖表更新 (Debounced) ---
             my_return = st.slider("年化報酬率 (%)", 0.0, 20.0, float(st.session_state.saved_return), 0.1)
             
             default_inf = getattr(st.session_state, 'saved_inflation', 3.0)
@@ -698,8 +693,6 @@ def main_app():
             my_age = st.number_input("目前年齡", value=int(st.session_state.saved_age))
             my_savings = st.number_input("年投入投資金額 (Annual Investment)", value=float(st.session_state.saved_savings), step=10000.0, help="此金額將每年加入本金，並以複利計算成長")
             
-            # 這些變數現在只會更新 Session State 和圖表，不會觸發存檔
-            # 只有在切換頁面或手動按存檔時才會寫入 Google Sheet
             if (my_return != st.session_state.saved_return or 
                 my_expense != st.session_state.saved_expense or 
                 my_inflation != st.session_state.saved_inflation or
@@ -711,20 +704,18 @@ def main_app():
                 st.session_state.saved_age = my_age
                 st.session_state.saved_savings = my_savings
                 st.session_state.saved_inflation = my_inflation
-                
                 if auto_sync: save_data_to_cloud(st.session_state.target_sheet, silent=True)
                 
         with c_f2:
             st.subheader("資產累積預測 (複利成長)")
-            if not df_assets.empty:
-                base_wealth = net_worth if include_house else (net_worth - df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum())
-                house_part = df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum() if include_house else 0
-            else:
-                base_wealth = 0
-                house_part = 0
-
+            # 【關鍵修正】傳入計算後的流動資產與總負債
+            # 流動資產 = 總資產(含房) - 房產價值
+            # 這樣計算複利時，才不會把房產和負債也拿去算 15% 報酬率
+            liquid_assets = total_assets - df_fixed["現值"].astype(float).sum() if not df_fixed.empty else total_assets
+            house_value = df_fixed["現值"].astype(float).sum() if not df_fixed.empty else 0
+            
             ages, wealth_c, fire_c, custom_c = calculate_fire_curves_advanced(
-                my_age, base_wealth - house_part, house_part, my_savings, my_return, 3.0, my_inflation, my_expense, include_house
+                my_age, liquid_assets, house_value, total_liab, my_savings, my_return, 3.0, my_inflation, my_expense, include_house
             )
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=ages, y=wealth_c, name="預測資產 (含複利)", line=dict(color='#00F0FF', width=4)))
