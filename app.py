@@ -10,7 +10,6 @@ from streamlit import runtime
 import os
 import sys
 import json
-import time
 
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
@@ -56,7 +55,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 雲端資料庫核心 (使用快取加速) ---
+# --- 2. 雲端資料庫核心 ---
 
 ADMIN_DB_NAME = "nexus_data"
 EXCHANGE_RATE = 32.5 
@@ -73,6 +72,7 @@ def get_google_client():
             st.stop()
 
         creds_dict = dict(st.secrets["gcp_service_account"])
+        # 自動修復私鑰格式
         if "private_key" in creds_dict:
             key = creds_dict["private_key"]
             if "\\n" in key: key = key.replace("\\n", "\n")
@@ -82,7 +82,14 @@ def get_google_client():
         return gspread.authorize(creds)
     except Exception as e:
         st.error(f"🔥 連線錯誤: {e}")
-        return None
+        st.stop()
+
+def get_service_email():
+    """取得機器人 Email 供使用者除錯"""
+    try:
+        return st.secrets["gcp_service_account"]["client_email"]
+    except:
+        return "無法取得 Email"
 
 def check_login(username, password):
     try:
@@ -96,7 +103,13 @@ def check_login(username, password):
                str(user.get('Password')).strip() == str(password).strip():
                 return str(user.get('Target_Sheet'))
         return None
-    except: return None
+    except Exception as e:
+        if "SpreadsheetNotFound" in str(e):
+            st.error(f"❌ 找不到試算表 '{ADMIN_DB_NAME}'！")
+            st.info(f"請確認您已將該檔案分享給機器人：\n\n**{get_service_email()}**")
+        else:
+            st.error(f"登入錯誤: {e}")
+        return None
 
 def init_user_sheet(target_sheet_name):
     client = get_google_client()
@@ -104,7 +117,8 @@ def init_user_sheet(target_sheet_name):
     try:
         sh = client.open(target_sheet_name)
     except:
-        st.error(f"❌ 找不到試算表：{target_sheet_name}")
+        st.error(f"❌ 找不到個人試算表：{target_sheet_name}")
+        st.info(f"請去 Google Drive 確認檔案存在，並分享給：\n\n**{get_service_email()}**")
         st.stop()
     
     required = {
@@ -267,7 +281,6 @@ def update_portfolio_data(df, category_default):
     if "股數" in df.columns:
         df["股數"] = pd.to_numeric(df["股數"], errors='coerce').fillna(0)
     
-    # 顯示進度條
     progress_text = "正在連線更新股價..."
     my_bar = st.progress(0, text=progress_text)
     total_rows = len(df)
@@ -295,7 +308,7 @@ def update_portfolio_data(df, category_default):
     st.toast(f"✅ {category_default} 更新完成！")
     return df
 
-# --- 【修正】補回遺失的 parse_file 函式 ---
+# --- 【修正】補回 parse_file ---
 def parse_file(uploaded_file, import_type):
     try:
         if uploaded_file.name.endswith('.csv'): 
@@ -307,16 +320,13 @@ def parse_file(uploaded_file, import_type):
         df.columns = [str(c).lower().strip() for c in df.columns]
         new_data = []
         
-        # 根據匯入類型處理欄位
         if import_type in ["stock_us", "stock_tw"]:
-            # 尋找可能的欄位名稱
             ticker_col = next((c for c in df.columns if c in ['ticker', 'symbol', '代號', '股票代號']), None)
             shares_col = next((c for c in df.columns if c in ['shares', 'quantity', '股數', '數量', 'qty']), None)
             price_col = next((c for c in df.columns if c in ['price', 'cost', '自訂價格', '成本']), None)
             
             if not ticker_col or not shares_col: return None, "CSV 缺少 [代號] 或 [股數] 欄位"
             
-            # 處理資料格式
             df[ticker_col] = df[ticker_col].astype(str).str.strip().str.upper()
             df[shares_col] = pd.to_numeric(df[shares_col], errors='coerce').fillna(0)
             
@@ -333,9 +343,7 @@ def parse_file(uploaded_file, import_type):
         elif import_type == "fixed":
             name_col = next((c for c in df.columns if c in ['item', 'name', '資產項目', '名稱']), None)
             val_col = next((c for c in df.columns if c in ['value', 'amount', '現值', '金額']), None)
-            
             if not name_col or not val_col: return None, "CSV 缺少 [資產項目] 或 [現值] 欄位"
-            
             for _, row in df.iterrows():
                 new_data.append({
                     "資產項目": str(row[name_col]), 
@@ -347,9 +355,7 @@ def parse_file(uploaded_file, import_type):
             name_col = next((c for c in df.columns if c in ['item', 'name', '負債項目', '名稱']), None)
             amount_col = next((c for c in df.columns if c in ['amount', '金額']), None)
             monthly_col = next((c for c in df.columns if c in ['monthly', 'payment', '每月扣款']), None)
-            
             if not name_col or not amount_col: return None, "CSV 缺少 [負債項目] 或 [金額] 欄位"
-            
             for _, row in df.iterrows():
                 m_val = float(pd.to_numeric(row[monthly_col], errors='coerce') or 0) if monthly_col else 0.0
                 new_data.append({
@@ -424,10 +430,7 @@ def login_page():
 def main_app():
     with st.sidebar:
         st.info(f"👤 User: **{st.session_state.current_user}**")
-        
-        # 【新增】自動同步開關
-        auto_sync = st.toggle("☁️ 自動同步 (Auto-Sync)", value=False, help="開啟後，每次編輯都會自動上傳雲端 (會稍微變慢)")
-        
+        auto_sync = st.toggle("☁️ 自動同步 (Auto-Sync)", value=False)
         st.divider()
         if st.button("☁️ **手動同步存檔**", type="primary"): save_data_to_cloud(st.session_state.target_sheet)
         st.divider()
@@ -437,7 +440,6 @@ def main_app():
 
     def fmt_money(val): return "****" if privacy_mode else f"${val:,.0f}"
     
-    # 預設隱私模式
     privacy_mode = False
 
     if not st.session_state.get('data_loaded'):
@@ -594,9 +596,10 @@ def main_app():
                     cfg = {c: st.column_config.Column(disabled=True) for c in df.columns}
                     cfg["❌"] = st.column_config.CheckboxColumn(disabled=True)
                 else:
+                    # 【關鍵修復】使用最標準的參數寫法，避免 TypeError
                     cfg = {
                         "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
-                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0), 
+                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0),
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
