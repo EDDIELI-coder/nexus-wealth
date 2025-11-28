@@ -1,1 +1,7 @@
-streamlitpandasyfinanceplotlygspreadgoogle-authrequests
+streamlit
+pandas
+yfinance
+plotly
+gspread
+google-auth
+requests
