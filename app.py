@@ -295,6 +295,72 @@ def update_portfolio_data(df, category_default):
     st.toast(f"✅ {category_default} 更新完成！")
     return df
 
+# --- 【修正】補回遺失的 parse_file 函式 ---
+def parse_file(uploaded_file, import_type):
+    try:
+        if uploaded_file.name.endswith('.csv'): 
+            try: df = pd.read_csv(uploaded_file, encoding='utf-8')
+            except: df = pd.read_csv(uploaded_file, encoding='cp950')
+        elif uploaded_file.name.endswith(('.xls', '.xlsx')): df = pd.read_excel(uploaded_file)
+        else: return None, "格式不支援"
+
+        df.columns = [str(c).lower().strip() for c in df.columns]
+        new_data = []
+        
+        # 根據匯入類型處理欄位
+        if import_type in ["stock_us", "stock_tw"]:
+            # 尋找可能的欄位名稱
+            ticker_col = next((c for c in df.columns if c in ['ticker', 'symbol', '代號', '股票代號']), None)
+            shares_col = next((c for c in df.columns if c in ['shares', 'quantity', '股數', '數量', 'qty']), None)
+            price_col = next((c for c in df.columns if c in ['price', 'cost', '自訂價格', '成本']), None)
+            
+            if not ticker_col or not shares_col: return None, "CSV 缺少 [代號] 或 [股數] 欄位"
+            
+            # 處理資料格式
+            df[ticker_col] = df[ticker_col].astype(str).str.strip().str.upper()
+            df[shares_col] = pd.to_numeric(df[shares_col], errors='coerce').fillna(0)
+            
+            for _, row in df.iterrows():
+                new_data.append({
+                    "代號": row[ticker_col], 
+                    "名稱": "", 
+                    "股數": float(row[shares_col]),
+                    "類別": "美股" if import_type == "stock_us" else "台股",
+                    "自訂價格": float(row[price_col]) if price_col else 0.0, 
+                    "參考市價": 0.0
+                })
+
+        elif import_type == "fixed":
+            name_col = next((c for c in df.columns if c in ['item', 'name', '資產項目', '名稱']), None)
+            val_col = next((c for c in df.columns if c in ['value', 'amount', '現值', '金額']), None)
+            
+            if not name_col or not val_col: return None, "CSV 缺少 [資產項目] 或 [現值] 欄位"
+            
+            for _, row in df.iterrows():
+                new_data.append({
+                    "資產項目": str(row[name_col]), 
+                    "現值": float(pd.to_numeric(row[val_col], errors='coerce') or 0), 
+                    "類別": "固定資產"
+                })
+
+        elif import_type == "liab":
+            name_col = next((c for c in df.columns if c in ['item', 'name', '負債項目', '名稱']), None)
+            amount_col = next((c for c in df.columns if c in ['amount', '金額']), None)
+            monthly_col = next((c for c in df.columns if c in ['monthly', 'payment', '每月扣款']), None)
+            
+            if not name_col or not amount_col: return None, "CSV 缺少 [負債項目] 或 [金額] 欄位"
+            
+            for _, row in df.iterrows():
+                m_val = float(pd.to_numeric(row[monthly_col], errors='coerce') or 0) if monthly_col else 0.0
+                new_data.append({
+                    "負債項目": str(row[name_col]), 
+                    "金額": float(pd.to_numeric(row[amount_col], errors='coerce') or 0), 
+                    "每月扣款": m_val
+                })
+
+        return pd.DataFrame(new_data), None
+    except Exception as e: return None, f"解析失敗: {str(e)}"
+
 def calculate_fire_curves_advanced(current_age, investable_assets, house_value, savings, invest_return, house_growth, inflation, custom_expense, include_house_growth):
     ages = list(range(current_age, 66))
     curr_invest = investable_assets
@@ -530,8 +596,7 @@ def main_app():
                 else:
                     cfg = {
                         "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
-                        # 移除 disabled=True
-                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0),
+                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0), 
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
@@ -580,14 +645,12 @@ def main_app():
                         edited = edited[~edited["❌"]]
                         cols_to_save = [c for c in edited.columns if c not in ["總價值(TWD)", "佔比 (%)", "❌"]]
                         st.session_state[key] = edited[cols_to_save].to_dict('records')
-                        # 自動同步邏輯：如果開啟了自動同步，則刪除後立即存檔
                         if auto_sync: save_data_to_cloud(st.session_state.target_sheet, silent=True)
                         st.toast("已刪除項目")
                         st.rerun()
                     else:
                         cols_to_save = [c for c in edited.columns if c not in ["總價值(TWD)", "佔比 (%)", "❌"]]
                         st.session_state[key] = edited[cols_to_save].to_dict('records')
-                        # 自動同步邏輯：資料變更後立即存檔
                         if auto_sync: save_data_to_cloud(st.session_state.target_sheet, silent=True)
 
         c1, c2 = st.columns(2)
