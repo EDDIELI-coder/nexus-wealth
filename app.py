@@ -14,13 +14,12 @@ import json
 # --- 1. 系統設定 ---
 st.set_page_config(page_title="NEXUS: Wealth Command", layout="wide", page_icon="🌌")
 
-# CSS 樣式 (維持你的粗體與卡片設計)
+# CSS 樣式 (已移除強制粗體，讓版面更自然)
 st.markdown("""
     <style>
-    /* 全局字體設定 - 強制粗體 */
+    /* 全局字體設定 - 回歸標準字重，避免跑版 */
     h1, h2, h3, h4, h5, h6, p, label, li, td, th, div, span, .stDataFrame, .stTable {
         font-family: "Roboto", "Microsoft JhengHei", sans-serif !important;
-        font-weight: 700 !important;
         line-height: 1.6 !important;
         letter-spacing: 0.5px;
     }
@@ -462,11 +461,10 @@ def main_app():
             with c_v1:
                 st.subheader("資產分佈")
                 fig = px.sunburst(df_assets, path=['類別', '資產'], values='價值', color='類別')
-                # 加上百分比標籤
-                fig.update_traces(textinfo="label+percent root")
+                # 加上百分比標籤並強制文字水平
+                fig.update_traces(textinfo="label+percent root", insidetextorientation='horizontal')
                 fig.update_layout(
                     template="plotly_dark",
-                    font=dict(family="Microsoft JhengHei", size=14, color="white"), # 強制粗體字型
                     margin=dict(t=20, l=20, r=20, b=20)
                 )
                 st.plotly_chart(fig, use_container_width=True)
