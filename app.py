@@ -162,7 +162,6 @@ def save_data_to_cloud(target_sheet):
                     if c in df_clean.columns:
                         df_clean[c] = pd.to_numeric(df_clean[c], errors='coerce').fillna(0)
 
-                # 自動清理邏輯
                 if "代號" in df_clean.columns:
                     df_clean = df_clean[
                         (df_clean["代號"].astype(str).str.strip() != "") & 
@@ -368,7 +367,7 @@ def main_app():
     st.title(f"🌌 NEXUS: {st.session_state.current_user}'s Command")
     if 'fire_states' not in st.session_state: st.session_state.fire_states = {"Lean": True, "Barista": True, "Regular": True, "Fat": True}
     
-    # 【關鍵修正】確保欄位存在，防止 KeyError 並預設為空 dataframe
+    # 確保欄位存在
     def ensure_cols(df, cols):
         if df.empty: return pd.DataFrame(columns=cols)
         for c in cols:
@@ -382,7 +381,6 @@ def main_app():
     df_liab = ensure_cols(pd.DataFrame(st.session_state.liab_data), ["負債項目", "金額", "每月扣款"])
 
     assets_list = []
-    # 【關鍵修正】避免空表格導致的計算錯誤
     if not df_us.empty:
         for _, row in df_us.iterrows():
             p = float(row.get("自訂價格", 0) or 0)
@@ -410,7 +408,6 @@ def main_app():
             if name and name != "None" and v > 0:
                 assets_list.append({"資產": name, "類別": row.get("類別","固定"), "價值": v})
 
-    # 若無資產，建立空 DataFrame 避免報錯
     df_assets = pd.DataFrame(assets_list)
     if df_assets.empty:
         df_assets = pd.DataFrame(columns=["資產", "類別", "價值"])
@@ -418,7 +415,6 @@ def main_app():
     else:
         total_assets = df_assets["價值"].sum()
     
-    # 計算負債 (確保安全讀取)
     total_liab = pd.to_numeric(df_liab["金額"], errors='coerce').fillna(0).sum() if not df_liab.empty else 0
     total_monthly = pd.to_numeric(df_liab["每月扣款"], errors='coerce').fillna(0).sum() if not df_liab.empty else 0
     
@@ -465,14 +461,12 @@ def main_app():
                 df = pd.DataFrame(st.session_state[key])
                 if df.empty: df = pd.DataFrame(columns=cols)
                 
-                # 確保欄位格式正確
                 for c in df.columns:
                     if c in ["股數", "現值", "金額", "自訂價格", "參考市價", "每月扣款"]:
                         df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
                     else:
                         df[c] = df[c].astype(str).replace("nan", "")
 
-                # 計算總金額
                 total_cat_val = 0
                 vals = []
                 if "股數" in df.columns:
@@ -481,17 +475,14 @@ def main_app():
                         if p<=0: p = float(r.get("參考市價",0))
                         v = p * float(r.get("股數",0)) * rate
                         vals.append(v)
-                    # 1. 建立新欄位
                     df["總價值(TWD)"] = vals
                     total_cat_val = sum(vals)
                     
-                    # 2. 計算佔比
                     if total_cat_val > 0:
                         df["佔比 (%)"] = df["總價值(TWD)"] / total_cat_val
                     else:
                         df["佔比 (%)"] = 0
                 elif "現值" in df.columns:
-                    # 對於固定資產
                     df["總價值(TWD)"] = pd.to_numeric(df["現值"], errors='coerce').fillna(0)
                     total_cat_val = df["總價值(TWD)"].sum()
                     if total_cat_val > 0:
@@ -499,7 +490,6 @@ def main_app():
                     else:
                         df["佔比 (%)"] = 0
                 elif "金額" in df.columns:
-                    # 對於負債
                     df["總價值(TWD)"] = pd.to_numeric(df["金額"], errors='coerce').fillna(0)
                     total_cat_val = df["總價值(TWD)"].sum()
                     if total_cat_val > 0:
@@ -507,19 +497,11 @@ def main_app():
                     else:
                         df["佔比 (%)"] = 0
 
-                # 加入刪除欄位
                 df["❌"] = False
                 
-                # 【關鍵】指定欄位順序
-                # 定義理想的順序清單
                 preferred_order = ["❌", "代號", "名稱", "股數", "類別", "自訂價格", "參考市價", "資產項目", "現值", "負債項目", "金額", "每月扣款", "總價值(TWD)", "佔比 (%)"]
-                
-                # 篩選出實際存在的欄位
                 final_cols = [c for c in preferred_order if c in df.columns]
-                
-                # 加上任何可能遺漏的欄位
                 remaining = [c for c in df.columns if c not in final_cols]
-                
                 df = df[final_cols + remaining]
 
                 num_class = "cat-val-num-red" if is_liability else "cat-val-num"
@@ -533,10 +515,10 @@ def main_app():
                     cfg = {c: st.column_config.Column(disabled=True) for c in df.columns}
                     cfg["❌"] = st.column_config.CheckboxColumn(disabled=True)
                 else:
-                    # 設定欄位顯示屬性 (使用安全的 keyword arguments)
+                    # 【關鍵修復】使用 Keyword Arguments，移除有問題的參數
                     cfg = {
                         "總價值(TWD)": st.column_config.NumberColumn(label="總價值(TWD)", format="$%d", disabled=True),
-                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0, disabled=True),
+                        "佔比 (%)": st.column_config.ProgressColumn(label="佔比 (%)", format="%.1f%%", min_value=0.0, max_value=1.0), # 移除 disabled=True，防止版本相容問題
                         "❌": st.column_config.CheckboxColumn(label="❌", width="small", help="勾選後刪除"),
                         "代號": st.column_config.TextColumn(label="代號", width="small"),
                         "名稱": st.column_config.TextColumn(label="名稱", width="medium"),
@@ -556,16 +538,14 @@ def main_app():
                     num_rows="fixed",
                     key=f"e_{key}", 
                     column_config=cfg,
-                    column_order=list(df.columns), # 明確指定順序
+                    column_order=list(df.columns),
                     use_container_width=True
                 )
 
                 col_add, col_gap = st.columns([1, 5])
                 with col_add:
                     if st.button(f"➕ 新增一筆", key=f"add_{key}"):
-                        # 建立新的一行，包含所有基礎欄位
                         new_row = {c: "" for c in cols}
-                        # 預設值
                         if "類別" in cols: 
                             if "us" in key: new_row["類別"] = "美股"
                             elif "tw" in key: new_row["類別"] = "台股"
@@ -579,16 +559,13 @@ def main_app():
                         st.rerun()
 
                 if not privacy_mode:
-                    # 檢查刪除
                     if edited["❌"].any():
                         edited = edited[~edited["❌"]]
-                        # 存檔前移除計算欄位和輔助欄位
                         cols_to_save = [c for c in edited.columns if c not in ["總價值(TWD)", "佔比 (%)", "❌"]]
                         st.session_state[key] = edited[cols_to_save].to_dict('records')
                         st.toast("已刪除項目")
                         st.rerun()
                     else:
-                        # 正常更新
                         cols_to_save = [c for c in edited.columns if c not in ["總價值(TWD)", "佔比 (%)", "❌"]]
                         st.session_state[key] = edited[cols_to_save].to_dict('records')
 
@@ -619,7 +596,6 @@ def main_app():
                 st.session_state.saved_savings = my_savings
         with c_f2:
             st.subheader("資產累積預測")
-            # 修正：增加空表格判斷，避免取值錯誤
             if not df_assets.empty:
                 base_wealth = net_worth if include_house else (net_worth - df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum())
                 house_part = df_assets[df_assets['類別'].str.contains('房產|固定', na=False)]['價值'].sum() if include_house else 0
