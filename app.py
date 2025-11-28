@@ -61,14 +61,9 @@ def get_google_client():
 
         creds_dict = dict(st.secrets["gcp_service_account"])
         
-        # 關鍵修正：如果 secrets 裡已經是多行字串(real newlines)，這裡不需做 replace
-        # 如果是單行字串含 \n，則做 replace。這樣兩邊都相容。
-        if "private_key" in creds_dict:
-            key = creds_dict["private_key"]
-            if "\\n" in key:
-                key = key.replace("\\n", "\n")
-            creds_dict["private_key"] = key
-
+        # 這裡不需要再做任何 replace，因為 Secrets 已經是完美的多行字串格式
+        # google-auth 會直接讀取它
+        
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
         
